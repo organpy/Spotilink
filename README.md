@@ -4,9 +4,10 @@
   </a>
   <h1></h1>
   <p>A server-side API for <a href="https://github.com/AymennX/Destro">Destro</a>. It reads public Spotify track metadata, searches official YouTube and SoundCloud APIs, verifies candidates, and caches the results in SQLite. It never downloads, proxies, streams, or stores audio.</p>
-  <a href="https://destro.aetherics.dev/">
-    <img src="trydestro.png" alt="Try Destro" width="200">
-  </a>
+  <a href="https://destro.aetherics.dev/" target="_blank" rel="noopener noreferrer">
+  <img src="trydestro.png" alt="Try Destro" width="200">
+</a>
+
 </div>
 
 ## Quick start
