@@ -28,7 +28,11 @@ _SHOWCASE_PAGE = Path(__file__).resolve().parent / "static" / "index.html"
     response_model_exclude_none=False,
     summary="Resolve a Spotify track URL to a verified provider track",
     responses={
-        200: {"description": "Verified match, or an unverified search fallback"},
+        200: {
+            "description": (
+                "Verified match, stale cached match, or an unverified search fallback"
+            )
+        },
         400: {"description": "Missing or invalid query parameter"},
         404: {"description": "Spotify track does not exist"},
         422: {"description": "Unsupported Spotify URL"},
