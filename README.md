@@ -1,10 +1,17 @@
-# Spotify Resolver
+<a href="https://destro.aetherics.dev/">
+  <p align="center">
+    <img src="spotilink.svg" alt="Spotilink banner">
+  </p>
+</a>
+<h2 align="center">Spotilink</h2>
+<p align="center">A server-side API that turns public Spotify track URLs into verified YouTube or SoundCloud track links.</p>
+<br/>
 
-A small server-side API that turns a **public Spotify track URL** into a **verified YouTube or SoundCloud track URL**. It reads structured metadata from the public Spotify track page without the Spotify Web API, searches provider APIs, scores candidates, and caches verified results in SQLite.
+It was made for [Destro](https://destro.aetherics.dev/), live music rooms for listening together.
 
 It never downloads, proxies, streams, or stores audio.
 
-```
+```text
 GET /v1/resolve?url=https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC&platform=youtube
 ```
 
@@ -22,6 +29,7 @@ GET /v1/resolve?url=https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC&platfo
 - Penalizes live, remix, instrumental, karaoke, cover, sped-up, slowed, nightcore, 8D, bass-boosted, extended, edit, and similar alternate versions.
 - Returns a verified match only when it clears a configurable confidence threshold.
 - Returns a clearly marked **unverified search fallback** when nothing clears the threshold.
+- Serves an expired verified match as **stale** when a provider is rate-limited or otherwise failing, rather than losing the link entirely.
 - Caches metadata, verified matches, and short-lived negative results in SQLite.
 - Deduplicates concurrent lookups in one process with per-key locks.
 - Enforces request timeouts, response-size limits, outbound provider rate limits, inbound API rate limits, and bounded retries.
@@ -32,7 +40,7 @@ GET /v1/resolve?url=https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC&platfo
 - [`uv`](https://docs.astral.sh/uv/) (or pip + a virtual environment)
 - At least one provider:
   - A YouTube Data API v3 key
-  - A SoundCloud app with client credentials
+  - A SoundCloud app with client credentials. SoundCloud currently requires an **Artist Pro** subscription to register an API app; leave SoundCloud unset for a YouTube-only deployment.
 
 ## Quick start
 
@@ -45,23 +53,14 @@ uv run uvicorn spotify_resolver.main:app --host 127.0.0.1 --port 8000
 
 The app loads `.env` from the working directory. Environment variables always take precedence in normal deployment setups; provider credentials are never written to the database or logs.
 
+The project/distribution is named **Spotilink**; the Python package remains `spotify_resolver` so existing imports and deployment commands keep working.
+
 - Web UI: <http://127.0.0.1:8000/>
 - API docs: <http://127.0.0.1:8000/docs>
 - Health/configuration: <http://127.0.0.1:8000/healthz>
 - Resolve: <http://127.0.0.1:8000/v1/resolve?url=https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC>
 
-The local page at `/` is a minimal raw-JSON viewer. Paste a public Spotify track URL,
-choose YouTube or SoundCloud, and submit the request without using the command line. The
-API response body is displayed as returned, including error responses. It uses no external
-assets or CDNs.
-
-Run the tests:
-
-```bash
-uv run pytest -q
-```
-
-All HTTP calls in the test suite are mocked. No live credentials are required.
+The local page at `/` is a minimal raw-JSON viewer. Paste a public Spotify track URL and submit the request without using the command line. The API response body is displayed as returned, including error responses. It uses no external assets or CDNs.
 
 ## Provider setup
 
@@ -71,28 +70,23 @@ All HTTP calls in the test suite are mocked. No live credentials are required.
 2. Create an API key and set `YOUTUBE_API_KEY`.
 3. Keep the key server-side. Do not expose it to browsers.
 
-Quota notes:
+Quick quota facts:
 
 - `search.list` costs **100 quota units per call**.
 - `videos.list` costs **1 unit per call**.
 - The default project quota is **10,000 units/day**.
-- With the default `YOUTUBE_MAX_QUERIES=2`, an uncached resolve can cost up to **202 units** (two searches plus up to two video-details calls). Default quota therefore allows roughly 49 worst-case uncached resolutions per day. Verified and negative cache entries reduce this substantially.
-- Set `YOUTUBE_MAX_QUERIES=1` to halve search quota usage at the cost of fewer query variants.
-- `YOUTUBE_RATE_LIMIT_PER_MINUTE` and `YOUTUBE_RATE_LIMIT_BURST` add a local token bucket on top of Google's quota.
+- The default `YOUTUBE_MAX_QUERIES=1` costs up to **101 units per uncached resolve**, or roughly **99 new resolutions per day** before cache hits.
+- See [provider limits and failover](docs/development.md#provider-limits-and-quota) for the full quota math, stale-match behavior, and `YOUTUBE_MAX_QUERIES=2` tradeoff.
 
 ### SoundCloud official API
 
-1. Create a SoundCloud app at <https://soundcloud.com/you/apps>.
+SoundCloud currently requires a **SoundCloud Artist Pro subscription** to register an API application and obtain a Client ID/Secret. See the official [API key instructions](https://developers.soundcloud.com/docs/api/register-app). If you do not have Artist Pro, skip SoundCloud and run YouTube-only.
+
+1. Register a SoundCloud API app while signed in with an Artist Pro account.
 2. Set `SOUNDCLOUD_CLIENT_ID` and `SOUNDCLOUD_CLIENT_SECRET`.
 3. The resolver obtains an OAuth 2.1 client-credentials token from `https://secure.soundcloud.com/oauth/token` and refreshes it after expiry or a `401`.
 
-Known platform limits to plan around:
-
-- **50 client-credential tokens per 12 hours per app**.
-- **30 token requests per hour per IP**.
-- Access tokens are valid for about **1 hour**.
-- The resolver caches the token in memory and only refreshes when needed. Multiple app processes each maintain their own token cache.
-- SoundCloud API request limits can change; `SOUNDCLOUD_RATE_LIMIT_PER_MINUTE` and `SOUNDCLOUD_RATE_LIMIT_BURST` provide a conservative local limit. Review the current SoundCloud developer terms and rate limits for your app.
+See [SoundCloud limits](docs/development.md#soundcloud-official-api) for token issuance and rate-limit details.
 
 ## API
 
@@ -138,6 +132,7 @@ Example verified response:
   },
   "search_fallback": null,
   "cached": false,
+  "stale": false,
   "metadata_cached": false,
   "attempts": [
     {
@@ -171,6 +166,7 @@ A no-match response is still HTTP `200` with `ok: true`, `match: null`, and an *
     "reason": "no_verified_match"
   },
   "cached": false,
+  "stale": false,
   "metadata_cached": false,
   "attempts": [
     {"platform": "youtube", "status": "no_match", "cached": false, "best_confidence": 0.73}
@@ -179,113 +175,42 @@ A no-match response is still HTTP `200` with `ok: true`, `match: null`, and an *
 }
 ```
 
-Errors use the same envelope with `ok: false` and `error: {code, message, retryable, retry_after_seconds}`. When Spotify metadata was already available, the envelope also includes the flat Spotify fields and a search fallback.
+Errors use the same envelope with `ok: false` and `error: {code, message, retryable, retry_after_seconds}`. When Spotify metadata was already available, the envelope also includes the flat Spotify fields and a search fallback. A provider-failure fallback uses `reason: "provider_unavailable"` and remains unverified.
+
+If a provider is rate-limited, times out, rejects its credentials, or fails upstream, the resolver checks for an expired verified match within `STALE_MATCH_GRACE_SECONDS`. If one exists and still passes the current matching threshold, it returns HTTP `200` with the direct URL, `cached: true`, `stale: true`, and an attempt status of `stale`. That URL is not rechecked against the provider and may no longer be playable.
 
 ### Status codes
 
 | Code | Meaning |
 |---|---|
-| `200` | Resolution completed. `match` may be `null`. |
+| `200` | Resolution completed. `match` may be `null`; a match with `stale: true` came from the expired cache. |
 | `400` | Missing/invalid parameter or invalid boolean. |
 | `404` | Spotify reports that the track does not exist. |
 | `422` | Unsupported Spotify URL (album, playlist, artist, malformed ID, etc.). |
 | `429` | Inbound API rate limit exceeded. `Retry-After` is set. |
 | `502` | Spotify page metadata is unavailable or unusable. |
-| `503` | Provider unavailable/rate-limited/not configured, Spotify unavailable, or all providers failed. |
+| `503` | Provider unavailable/rate-limited/not configured, Spotify unavailable, or all providers failed. The body may include an unverified search fallback. |
 | `504` | Spotify, provider, or whole-resolution timeout. |
 
 ### `GET /healthz`
 
 Returns `200` when SQLite is reachable and at least one provider is configured. Otherwise returns `503` with `status: "degraded"`. It exposes provider names and configured booleans only; no credentials.
 
-## Matching
+## Development
 
-The default score is a weighted average plus bonuses/penalties:
+Implementation details live in [`docs/development.md`](docs/development.md):
 
-- Title similarity: `0.50`
-- Artist/channel similarity: `0.35`
-- Duration similarity: `0.15`
+- Provider quota and rate-limit notes
+- Matching and scoring rules
+- SQLite schema, cache TTLs, stale-if-error behavior, and concurrency
+- Full configuration reference
+- Project layout and testing
+- Operational limitations
 
-Duration is omitted if either side lacks a duration; the title/artist weights are renormalized and the total is capped by `NO_DURATION_SCORE_CAP` (default `0.85`). Duration is required by default (`REQUIRE_DURATION=true`), so such a candidate is not verified. A match is eligible only when:
+Architecture and provider terms remain in separate documents:
 
-- If both durations are present, they are within `30s` for YouTube or `15s` for SoundCloud. Missing duration is rejected unless `REQUIRE_DURATION=false`.
-- Title similarity is at least `MIN_TITLE_SCORE` (default `0.65`).
-- Artist similarity is at least `MIN_ARTIST_SCORE` (default `0.50`).
-- The final score is at least `MATCH_THRESHOLD` (default `0.80`).
-
-Official-channel bonuses are small, not decisive: YouTube `- Topic` up to `0.06`, VEVO up to `0.04`, other official-looking channels up to `0.02`; verified SoundCloud uploaders up to `0.02`. Version mismatches apply meaningful penalties (roughly `0.02` for remaster through `0.45` for karaoke). The API returns the full score breakdown so callers can audit decisions.
-
-If no candidate clears the threshold, the API never labels it verified. It returns a provider search URL instead.
-
-## Caching and concurrency
-
-SQLite in WAL mode stores:
-
-- `spotify_metadata`: found/not-found metadata with fetched and expiry timestamps.
-- `resolutions`: one row per `(spotify_id, platform)` with status (`matched`/`not_found`), canonical URL, confidence, score breakdown, metadata snapshot, timestamps, and expiry.
-
-Default TTLs:
-
-| Entry | TTL |
-|---|---|
-| Spotify metadata | 7 days |
-| Verified match | 7 days |
-| Negative provider result | 1 hour |
-| Spotify track not found | 5 minutes |
-
-A verified match can be served after metadata expires because the resolution row includes a metadata snapshot. Metadata and resolution lookups use separate per-key locks so concurrent identical requests share one Spotify fetch and one provider search per process. Cached candidates are re-scored with the current matching configuration on every cache hit; a match that no longer clears the current threshold is searched again. Transient provider failures are not cached.
-
-SQLite is shared across processes, but the in-process locks, provider token cache, and rate limiters are not. For multi-worker deployments, use conservative provider limits or route resolution through one worker/queue. The inbound limiter is also per process.
-
-## Configuration
-
-See [`.env.example`](.env.example) for every setting. Key groups:
-
-| Variable | Purpose |
-|---|---|
-| `HOST`, `PORT` | Bind address used by `python -m spotify_resolver.main`; Uvicorn CLI flags take precedence when supplied. |
-| `LOG_LEVEL` | Application/Uvicorn log level. |
-| `DATABASE_PATH` | SQLite path. Default `./data/resolver.db`. |
-| `YOUTUBE_API_KEY` | Enables YouTube. |
-| `SOUNDCLOUD_CLIENT_ID`, `SOUNDCLOUD_CLIENT_SECRET` | Enables SoundCloud. |
-| `MATCH_THRESHOLD`, `WEIGHT_*`, `MIN_*_SCORE`, `*_MAX_DURATION_DIFF_MS`, `REQUIRE_DURATION` | Matching behavior. |
-| `*_TTL_SECONDS` | Cache lifetimes. |
-| `*_RATE_LIMIT_PER_MINUTE`, `*_RATE_LIMIT_BURST` | Outbound provider token buckets. |
-| `API_RATE_LIMIT_PER_MINUTE` | Inbound per-client sliding window. `0` disables. |
-| `RESOLVE_TIMEOUT_SECONDS` | Whole-request timeout. |
-| `PROVIDER_TIMEOUT_SECONDS`, `SPOTIFY_TIMEOUT_SECONDS` | Per-upstream request timeouts. |
-| `HTTP_MAX_RETRIES`, `HTTP_RETRY_BACKOFF_SECONDS`, `HTTP_RETRY_AFTER_CAP_SECONDS` | Retry policy for `429`/`5xx`; timeouts are not retried. |
-| `*_MAX_BYTES` | Response-size caps. |
-| `CORS_ORIGINS` | Comma-separated browser origins. Empty disables CORS middleware. |
-| `TRUST_PROXY_HEADERS` | Trust the first `X-Forwarded-For` address for inbound limiting. Only enable behind a trusted proxy. |
-
-## Project layout
-
-```
-src/spotify_resolver/
-  api.py          FastAPI routes, error handlers, inbound limiter
-  cache.py        SQLite metadata/resolution cache
-  concurrency.py  Keyed locks, token bucket, sliding window limiter
-  config.py       Environment-backed settings
-  http.py         Bounded HTTP client with redirects/retries/size limits
-  main.py         Application factory and lifespan
-  matching.py     Normalization, version penalties, scoring, queries
-  models.py       Domain models and cache serialization
-  schemas.py      Public JSON schema
-  service.py      Resolution orchestration and fallback
-  spotify.py      Public-page URL validation and metadata extraction
-  providers/      YouTube and SoundCloud official API clients
-tests/            Fully mocked unit/integration tests
-```
-
-## Limitations and operational notes
-
-- Spotify can change its public page format or block automated requests. Extraction is layered to be resilient, but a blocked/redesigned page becomes `502`.
-- This project deliberately does **not** use the official Spotify Web API, OAuth, or credentials.
-- YouTube quota is the main scaling constraint. Cache aggressively and reduce query variants if needed.
-- SoundCloud token issuance limits matter for multi-process or frequently restarted deployments.
-- Provider search results and availability are outside this service's control. The fallback URL is a convenience, not a verification.
-- Do not use this service to download or redistribute audio, bypass provider terms, or evade rate limits. See [docs/provider-terms.md](docs/provider-terms.md).
+- [Architecture](docs/architecture.md)
+- [Provider terms](docs/provider-terms.md)
 
 ## License / affiliation
 
