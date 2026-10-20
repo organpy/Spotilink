@@ -70,7 +70,7 @@ class Settings:
     database_path: Path = Path("data/resolver.db")
 
     # HTTP
-    http_user_agent: str = "spotify-resolver/0.1"
+    http_user_agent: str = "spotilink/0.1"
     http_connect_timeout_seconds: float = 5.0
     http_max_retries: int = 1
     http_retry_backoff_seconds: float = 0.5
@@ -84,7 +84,7 @@ class Settings:
     # YouTube
     youtube_api_key: str | None = field(default=None, repr=False)
     youtube_max_results: int = 10
-    youtube_max_queries: int = 2
+    youtube_max_queries: int = 1
     youtube_rate_limit_per_minute: int = 10
     youtube_rate_limit_burst: int = 2
 
@@ -120,6 +120,9 @@ class Settings:
     metadata_cache_ttl_seconds: int = 604_800
     negative_cache_ttl_seconds: int = 3_600
     spotify_not_found_cache_ttl_seconds: int = 300
+    # Expired verified matches are retained for this long and may be served
+    # when a provider fails (for example, YouTube quota exhaustion).
+    stale_match_grace_seconds: int = 2_592_000
 
     # API
     resolve_timeout_seconds: float = 30.0
@@ -225,13 +228,15 @@ class Settings:
             raise ValueError("HTTP_RETRY_BACKOFF_SECONDS cannot be negative")
         if self.provider_rate_limit_wait_seconds < 0:
             raise ValueError("PROVIDER_RATE_LIMIT_WAIT_SECONDS cannot be negative")
+        if self.stale_match_grace_seconds < 0:
+            raise ValueError("STALE_MATCH_GRACE_SECONDS cannot be negative")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
         source = os.environ if env is None else env
         return cls(
             database_path=Path(_text(source, "DATABASE_PATH", "data/resolver.db")),
-            http_user_agent=_text(source, "HTTP_USER_AGENT", "spotify-resolver/0.1"),
+            http_user_agent=_text(source, "HTTP_USER_AGENT", "spotilink/0.1"),
             http_connect_timeout_seconds=_number(
                 source, "HTTP_CONNECT_TIMEOUT_SECONDS", 5.0
             ),
@@ -247,7 +252,7 @@ class Settings:
             spotify_max_redirects=_integer(source, "SPOTIFY_MAX_REDIRECTS", 3),
             youtube_api_key=_optional(source, "YOUTUBE_API_KEY"),
             youtube_max_results=_integer(source, "YOUTUBE_MAX_RESULTS", 10),
-            youtube_max_queries=_integer(source, "YOUTUBE_MAX_QUERIES", 2),
+            youtube_max_queries=_integer(source, "YOUTUBE_MAX_QUERIES", 1),
             youtube_rate_limit_per_minute=_integer(
                 source, "YOUTUBE_RATE_LIMIT_PER_MINUTE", 10
             ),
@@ -296,6 +301,9 @@ class Settings:
             ),
             spotify_not_found_cache_ttl_seconds=_integer(
                 source, "SPOTIFY_NOT_FOUND_CACHE_TTL_SECONDS", 300
+            ),
+            stale_match_grace_seconds=_integer(
+                source, "STALE_MATCH_GRACE_SECONDS", 2_592_000
             ),
             resolve_timeout_seconds=_number(source, "RESOLVE_TIMEOUT_SECONDS", 30.0),
             api_rate_limit_per_minute=_integer(source, "API_RATE_LIMIT_PER_MINUTE", 60),
