@@ -41,7 +41,10 @@ def create_app(
         cache = Cache(app_settings.database_path)
         await cache.initialize()
         try:
-            await cache.prune(epoch_clock())
+            await cache.prune(
+                epoch_clock(),
+                stale_match_grace_seconds=app_settings.stale_match_grace_seconds,
+            )
         except Exception:
             logger.warning("Initial cache prune failed", exc_info=True)
 
@@ -105,12 +108,13 @@ def create_app(
             await cache.close()
 
     app = FastAPI(
-        title="Spotify Resolver",
+        title="Spotilink",
         version="0.1.0",
         description=(
-            "Resolve public Spotify track links to verified YouTube or SoundCloud "
-            "track links. Spotify is read from public track pages without the Spotify "
-            "Web API; no audio is downloaded or proxied."
+            "Spotilink resolves public Spotify track links to verified YouTube or "
+            "SoundCloud track links. Spotify is read from public track pages without "
+            "the Spotify Web API; no audio is downloaded or proxied. Made for "
+            "[Destro](https://destro.aetherics.dev/)."
         ),
         lifespan=lifespan,
     )
