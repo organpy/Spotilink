@@ -219,50 +219,37 @@ class Cache:
         if row is None:
             return None
 
-        track = _track_from_row(row, spotify_id)
-        if track is None:
-            return None
-        status = row["status"]
-        if status == "not_found":
-            return CachedResolution(
-                spotify_id=spotify_id,
-                platform=platform,
-                status="not_found",
-                track=track,
-                url=None,
-                confidence=None,
-                best_confidence=_float_or_none(row["best_confidence"]),
-                candidate=None,
-                resolved_at=float(row["resolved_at"]),
-                expires_at=float(row["expires_at"]),
-            )
-        if status != "matched":
-            return None
+        return _resolution_from_row(row, spotify_id, platform)
 
-        candidate_json = row["candidate_json"]
-        if not candidate_json:
+    async def get_stale_resolution(
+        self,
+        spotify_id: str,
+        platform: str,
+        now: float,
+        grace_seconds: int,
+    ) -> CachedResolution | None:
+        if grace_seconds <= 0:
             return None
-        try:
-            candidate = scored_candidate_from_cache_dict(json.loads(candidate_json))
-        except (ValueError, TypeError, KeyError, RecursionError):
+        db = self._require_db()
+        async with self._lock:
+            cursor = await db.execute(
+                """
+                SELECT * FROM resolutions
+                WHERE spotify_id = ? AND platform = ? AND status = 'matched'
+                  AND expires_at <= ? AND expires_at > ?
+                """,
+                (
+                    spotify_id,
+                    platform,
+                    int(now),
+                    int(now) - int(grace_seconds),
+                ),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+        if row is None:
             return None
-        if (
-            candidate.candidate.platform != platform
-            or candidate.candidate.url != row["url"]
-        ):
-            return None
-        return CachedResolution(
-            spotify_id=spotify_id,
-            platform=platform,
-            status="matched",
-            track=track,
-            url=row["url"],
-            confidence=_float_or_none(row["confidence"]),
-            best_confidence=_float_or_none(row["best_confidence"]),
-            candidate=candidate,
-            resolved_at=float(row["resolved_at"]),
-            expires_at=float(row["expires_at"]),
-        )
+        return _resolution_from_row(row, spotify_id, platform)
 
     async def put_resolution(
         self,
@@ -329,16 +316,25 @@ class Cache:
             )
             await db.commit()
 
-    async def prune(self, now: float) -> None:
+    async def prune(
+        self,
+        now: float,
+        *,
+        stale_match_grace_seconds: int = 0,
+    ) -> None:
         db = self._require_db()
+        retain_after = int(now) - max(0, int(stale_match_grace_seconds))
         async with self._lock:
             await db.execute(
                 "DELETE FROM spotify_metadata WHERE expires_at <= ?",
                 (int(now),),
             )
             await db.execute(
-                "DELETE FROM resolutions WHERE expires_at <= ?",
-                (int(now),),
+                """
+                DELETE FROM resolutions
+                WHERE expires_at <= ? AND (status = 'not_found' OR expires_at <= ?)
+                """,
+                (int(now), retain_after),
             )
             await db.commit()
 
@@ -346,6 +342,57 @@ class Cache:
         if self._db is None:
             raise RuntimeError("Cache has not been initialized")
         return self._db
+
+
+def _resolution_from_row(
+    row: aiosqlite.Row,
+    spotify_id: str,
+    platform: str,
+) -> CachedResolution | None:
+    track = _track_from_row(row, spotify_id)
+    if track is None:
+        return None
+    status = row["status"]
+    if status == "not_found":
+        return CachedResolution(
+            spotify_id=spotify_id,
+            platform=platform,
+            status="not_found",
+            track=track,
+            url=None,
+            confidence=None,
+            best_confidence=_float_or_none(row["best_confidence"]),
+            candidate=None,
+            resolved_at=float(row["resolved_at"]),
+            expires_at=float(row["expires_at"]),
+        )
+    if status != "matched":
+        return None
+
+    candidate_json = row["candidate_json"]
+    if not candidate_json:
+        return None
+    try:
+        candidate = scored_candidate_from_cache_dict(json.loads(candidate_json))
+    except (ValueError, TypeError, KeyError, RecursionError):
+        return None
+    if (
+        candidate.candidate.platform != platform
+        or candidate.candidate.url != row["url"]
+    ):
+        return None
+    return CachedResolution(
+        spotify_id=spotify_id,
+        platform=platform,
+        status="matched",
+        track=track,
+        url=row["url"],
+        confidence=_float_or_none(row["confidence"]),
+        best_confidence=_float_or_none(row["best_confidence"]),
+        candidate=candidate,
+        resolved_at=float(row["resolved_at"]),
+        expires_at=float(row["expires_at"]),
+    )
 
 
 def _track_from_row(row: aiosqlite.Row, spotify_id: str) -> SpotifyTrack | None:
