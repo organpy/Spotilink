@@ -157,6 +157,18 @@ def test_http_client_does_not_send_or_store_cookies(
         assert list(app.state.raw_http.cookies.items()) == []
 
 
+def test_root_serves_showcase_page(settings) -> None:
+    with _client(settings) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+    assert 'id="resolve-form"' in response.text
+    assert 'id="spotify-url"' in response.text
+    assert 'id="raw-response"' in response.text
+    assert "/v1/resolve" in response.text
+
+
 def test_missing_url_returns_400(settings) -> None:
     with _client(settings, youtube=FakeProvider("youtube", [_candidate()])) as client:
         response = client.get("/v1/resolve")

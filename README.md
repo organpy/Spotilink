@@ -45,9 +45,15 @@ uv run uvicorn spotify_resolver.main:app --host 127.0.0.1 --port 8000
 
 The app loads `.env` from the working directory. Environment variables always take precedence in normal deployment setups; provider credentials are never written to the database or logs.
 
+- Web UI: <http://127.0.0.1:8000/>
 - API docs: <http://127.0.0.1:8000/docs>
 - Health/configuration: <http://127.0.0.1:8000/healthz>
 - Resolve: <http://127.0.0.1:8000/v1/resolve?url=https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC>
+
+The local page at `/` is a minimal raw-JSON viewer. Paste a public Spotify track URL,
+choose YouTube or SoundCloud, and submit the request without using the command line. The
+API response body is displayed as returned, including error responses. It uses no external
+assets or CDNs.
 
 Run the tests:
 

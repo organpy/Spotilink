@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Paste a Spotify track URL and see the raw resolver JSON response.">
+  <meta name="color-scheme" content="dark">
+  <title>Spotify Resolver</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f0d;
+      --panel: #121916;
+      --line: rgba(238, 255, 245, 0.13);
+      --text: #f1f8f4;
+      --muted: #92a39a;
+      --green: #1ed760;
+      --red: #ff8080;
+      --amber: #f1bb5b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(800px 400px at 0% 0%, rgba(30, 215, 96, 0.1), transparent 60%),
+        var(--bg);
+    }
+
+    a {
+      color: var(--green);
+      text-decoration: none;
+    }
+
+    a:hover {
+      color: #72f29e;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .page {
+      width: min(920px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 5vw, 38px);
+      letter-spacing: -0.04em;
+    }
+
+    header a {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    header a:hover {
+      color: var(--text);
+    }
+
+    .intro {
+      margin: -12px 0 28px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    form,
+    .output {
+      padding: 20px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .input-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 150px auto;
+      gap: 9px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      height: 44px;
+      padding: 0 12px;
+      color: var(--text);
+      background: #080d0a;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      outline: none;
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(30, 215, 96, 0.12);
+    }
+
+    input::placeholder {
+      color: #617167;
+    }
+
+    .button {
+      height: 44px;
+      padding: 0 18px;
+      color: #061109;
+      white-space: nowrap;
+      background: var(--green);
+      border: 1px solid var(--green);
+      border-radius: 9px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .button:hover {
+      background: #3be676;
+    }
+
+    .button:disabled {
+      cursor: wait;
+      opacity: 0.7;
+    }
+
+    .options {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 13px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .options input {
+      width: 15px;
+      height: 15px;
+      margin: 0;
+      accent-color: var(--green);
+    }
+
+    .output {
+      margin-top: 16px;
+    }
+
+    .output-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .status.ok {
+      color: var(--green);
+    }
+
+    .status.error {
+      color: var(--red);
+    }
+
+    .status.loading {
+      color: var(--amber);
+    }
+
+    .copy {
+      padding: 6px 10px;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .copy:hover {
+      color: var(--text);
+      border-color: var(--green);
+    }
+
+    pre {
+      min-height: 260px;
+      max-height: 60vh;
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      color: #c5e1cd;
+      background: #080d0a;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    footer {
+      margin-top: 17px;
+      color: #6e7e75;
+      font-size: 11px;
+    }
+
+    @media (max-width: 650px) {
+      .input-row {
+        grid-template-columns: 1fr;
+      }
+
+      .button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Spotify Resolver</h1>
+      <a href="/docs">API docs</a>
+    </header>
+
+    <p class="intro">
+      Paste a public Spotify track URL and get the raw JSON response from
+      <code>/v1/resolve</code>.
+    </p>
+
+    <form id="resolve-form">
+      <label for="spotify-url">Spotify track URL</label>
+      <div class="input-row">
+        <input
+          id="spotify-url"
+          name="url"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="https://open.spotify.com/track/..."
+          required
+        >
+        <select id="platform" name="platform" aria-label="Preferred platform">
+          <option value="youtube">YouTube</option>
+          <option value="soundcloud">SoundCloud</option>
+        </select>
+        <button class="button" id="resolve-button" type="submit">Resolve</button>
+      </div>
+      <label class="options" for="fallback">
+        <input id="fallback" name="fallback" type="checkbox" checked>
+        Allow the other provider as a fallback
+      </label>
+    </form>
+
+    <section class="output">
+      <div class="output-header">
+        <span class="status" id="status">Waiting for a request</span>
+        <button class="copy" id="copy" type="button" hidden>Copy JSON</button>
+      </div>
+      <pre id="raw-response">The raw API response will appear here.</pre>
+    </section>
+
+    <footer>
+      Metadata only. No audio is downloaded or proxied.
+    </footer>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const form = document.getElementById("resolve-form");
+      const urlInput = document.getElementById("spotify-url");
+      const platformInput = document.getElementById("platform");
+      const fallbackInput = document.getElementById("fallback");
+      const button = document.getElementById("resolve-button");
+      const status = document.getElementById("status");
+      const rawResponse = document.getElementById("raw-response");
+      const copyButton = document.getElementById("copy");
+
+      function setStatus(text, tone = "") {
+        status.textContent = text;
+        status.className = `status ${tone}`.trim();
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const url = urlInput.value.trim();
+        if (!url) {
+          urlInput.focus();
+          return;
+        }
+
+        const params = new URLSearchParams({
+          url,
+          platform: platformInput.value,
+          fallback: String(fallbackInput.checked)
+        });
+
+        button.disabled = true;
+        copyButton.hidden = true;
+        setStatus("Resolving…", "loading");
+        rawResponse.textContent = "";
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
+
+        try {
+          const response = await fetch(`/v1/resolve?${params.toString()}`, {
+            headers: { "Accept": "application/json" },
+            cache: "no-store",
+            signal: controller.signal
+          });
+          const text = await response.text();
+          rawResponse.textContent = text;
+          setStatus(`HTTP ${response.status} ${response.statusText}`.trim(), response.ok ? "ok" : "error");
+          copyButton.hidden = false;
+        } catch (error) {
+          const message = error && error.name === "AbortError"
+            ? "Request timed out after 45 seconds."
+            : "Could not reach the resolver API.";
+          rawResponse.textContent = message;
+          setStatus("Request failed", "error");
+        } finally {
+          clearTimeout(timeoutId);
+          button.disabled = false;
+        }
+      });
+
+      copyButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(rawResponse.textContent);
+          copyButton.textContent = "Copied";
+          setTimeout(() => {
+            copyButton.textContent = "Copy JSON";
+          }, 1200);
+        } catch {
+          copyButton.textContent = "Copy failed";
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

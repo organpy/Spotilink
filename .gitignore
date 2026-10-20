@@ -14,3 +14,4 @@ data/
 *.db-shm
 *.db-journal
 .vscode/
+.opencode/

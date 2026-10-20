@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
@@ -18,6 +19,7 @@ from .schemas import ResolveResponse, response_from_error, response_from_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_SHOWCASE_PAGE = Path(__file__).resolve().parent / "static" / "index.html"
 
 
 @router.get(
@@ -98,14 +100,12 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse(status_code=200 if healthy else 503, content=body)
 
 
-@router.get("/", include_in_schema=False)
-async def root() -> dict[str, str]:
-    return {
-        "service": "spotify-resolver",
-        "resolve": "/v1/resolve?url=https://open.spotify.com/track/...",
-        "health": "/healthz",
-        "docs": "/docs",
-    }
+@router.get("/", include_in_schema=False, response_class=HTMLResponse)
+async def root() -> HTMLResponse:
+    return HTMLResponse(
+        content=_SHOWCASE_PAGE.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 class InboundRateLimitMiddleware(BaseHTTPMiddleware):
