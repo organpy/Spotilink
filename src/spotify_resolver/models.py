@@ -93,6 +93,7 @@ class ResolutionResult:
     cached: bool
     metadata_cached: bool
     attempts: tuple[Attempt, ...] = ()
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
