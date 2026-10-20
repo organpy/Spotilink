@@ -1,10 +1,14 @@
 # Development and operations
 
-Developer notes for Spotilink. See the [README](../README.md) for setup and API usage.
+Developer notes for Spotilink. See the [README](../README.md) for setup and the [API reference](api.md) for endpoints and response examples.
 
-## Provider limits and quota
+## Provider setup and limits
 
 ### YouTube Data API v3
+
+1. Create a Google Cloud project and enable **YouTube Data API v3**.
+2. Create an API key and set `YOUTUBE_API_KEY`.
+3. Keep the key server-side. Do not expose it to browsers.
 
 Quota notes:
 
@@ -19,6 +23,10 @@ Quota notes:
 ### SoundCloud official API
 
 SoundCloud currently requires a **SoundCloud Artist Pro subscription** to register an API application and obtain a Client ID/Secret. See the official [API key instructions](https://developers.soundcloud.com/docs/api/register-app). If you do not have Artist Pro, skip SoundCloud and run YouTube-only.
+
+1. Register a SoundCloud API app while signed in with an Artist Pro account.
+2. Set `SOUNDCLOUD_CLIENT_ID` and `SOUNDCLOUD_CLIENT_SECRET`.
+3. The resolver obtains an OAuth 2.1 client-credentials token from `https://secure.soundcloud.com/oauth/token` and refreshes it after expiry or a `401`.
 
 Known platform limits to plan around:
 
@@ -146,6 +154,7 @@ uv run pytest -q
 
 See also:
 
+- [API reference](api.md)
 - [Architecture](architecture.md)
 - [Provider terms](provider-terms.md)
 - [README](../README.md)
