@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://destro.aetherics.dev/">
-    <img src="spotilink.svg" alt="Spotilink banner" width="800">
+    <img src="spotilink.svg" alt="Spotilink banner" width="500">
   </a>
   <h1></h1>
   <p>A server-side API for <a href="https://github.com/AymennX/Destro">Destro</a>. It reads public Spotify track metadata, searches official YouTube and SoundCloud APIs, verifies candidates, and caches the results in SQLite. It never downloads, proxies, streams, or stores audio.</p>
