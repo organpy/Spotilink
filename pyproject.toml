@@ -1,7 +1,7 @@
 [project]
-name = "spotify-resolver"
+name = "spotilink"
 version = "0.1.0"
-description = "Resolve public Spotify track links to verified YouTube or SoundCloud links"
+description = "Spotilink: resolve public Spotify track links to verified YouTube or SoundCloud links"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
