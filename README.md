@@ -214,4 +214,4 @@ Architecture and provider terms remain in separate documents:
 
 ## License / affiliation
 
-No license has been chosen for this repository. This project is not affiliated with Spotify, YouTube, Google, or SoundCloud.
+MIT License. See [LICENSE](LICENSE). This project is not affiliated with Spotify, YouTube, Google, or SoundCloud.
