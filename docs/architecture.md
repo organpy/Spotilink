@@ -16,8 +16,9 @@
    - Build a small number of query variants.
    - Call the official provider API.
    - Normalize, score, rank, and optionally run another query variant if no strong match was found.
-   - Cache a verified match or a short-lived negative result.
-7. If a verified match exists, return it. Otherwise return HTTP `200` with `match: null` and an unverified search fallback. If no provider completed a search, return the appropriate `503`/`504` error envelope.
+   - If the provider is rate-limited, times out, rejects credentials, or fails upstream, try an expired verified match within `STALE_MATCH_GRACE_SECONDS`; serve it with `stale: true` only if it still passes the active matching threshold.
+   - Otherwise cache a verified match or a short-lived negative result.
+7. If a verified or stale match exists, return it. Otherwise return HTTP `200` with `match: null` and an unverified search fallback. If no provider completed a search, return the appropriate `503`/`504` error envelope with the search fallback when track metadata is known.
 
 ## Spotify extraction sources
 
@@ -61,12 +62,13 @@ resolutions
   duration_ms, duration_precision, resolved_at, expires_at
 ```
 
-`candidate_json` contains the candidate URL/title/artist/duration and the full score breakdown. Resolution rows include a metadata snapshot so a valid cached match can be served after the metadata cache expires. Cached candidates are re-scored with the active matching configuration; stale entries that no longer clear the threshold are ignored and searched again. Expired rows are filtered on read and pruned at startup.
+`candidate_json` contains the candidate URL/title/artist/duration and the full score breakdown. Resolution rows include a metadata snapshot so a valid cached match can be served after the metadata cache expires. Cached candidates are re-scored with the active matching configuration; entries that no longer clear the threshold are ignored and searched again. Fresh rows are filtered by `expires_at`. Expired matched rows are retained for `STALE_MATCH_GRACE_SECONDS` (default 30 days) and may be read through the stale fallback path after a provider failure. Expired negative rows and matched rows older than the grace period are pruned at startup.
 
 ## Failure isolation
 
 - Spotify transport/parse failures do not create negative provider cache entries.
-- Provider timeouts, rate limits, authentication errors, and upstream failures are reported in `attempts` but are not cached.
+- Provider timeouts, rate limits, authentication errors, and upstream failures are reported in `attempts` but are not cached as fresh results.
 - A completed search with no acceptable candidate is a normal `no_match` and is negatively cached.
+- An expired verified match may be returned only after one of those provider failures. It is marked `stale: true`, is not rechecked against the provider, and is not used when the provider completes a normal no-match search.
 - Redirects are allowed only to pre-approved hosts. Provider redirects are disabled.
 - Response bodies are streamed with byte caps; retries apply only to `429` and `5xx`, with capped `Retry-After` waits.
