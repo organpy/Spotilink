@@ -40,6 +40,10 @@ from .spotify import SpotifyClient, parse_spotify_track_url
 
 logger = logging.getLogger(__name__)
 
+_STALE_FALLBACK_STATUSES = frozenset(
+    {"rate_limited", "timeout", "auth_error", "upstream_error"}
+)
+
 
 class ResolverService:
     def __init__(
@@ -227,15 +231,16 @@ class ResolverService:
                     cached=match_cached,
                     metadata_cached=metadata_cached,
                     attempts=tuple(attempts),
+                    stale=any(attempt.status == "stale" for attempt in attempts),
                 )
 
+        completed = [attempt for attempt in attempts if attempt.status == "no_match"]
         fallback = SearchFallback(
             platform=preferred_platform,
             url=search_fallback_url(preferred_platform, track),
             verified=False,
-            reason="no_verified_match",
+            reason=("no_verified_match" if completed else "provider_unavailable"),
         )
-        completed = [attempt for attempt in attempts if attempt.status == "no_match"]
         if not completed:
             raise self._provider_failure_error(
                 track,
@@ -358,6 +363,29 @@ class ResolverService:
                 return accepted, False
 
             if provider_error is not None:
+                if provider_error.status in _STALE_FALLBACK_STATUSES:
+                    stale = await self._cache_get_stale_resolution(
+                        track.spotify_id,
+                        platform,
+                    )
+                    if stale is not None:
+                        validated = self._validated_cached_match(stale)
+                        if validated is not None:
+                            attempts.append(
+                                Attempt(
+                                    platform,
+                                    "stale",
+                                    cached=True,
+                                    best_confidence=validated.score.total,
+                                )
+                            )
+                            logger.info(
+                                "Serving stale %s match for %s after provider error: %s",
+                                platform,
+                                track.spotify_id,
+                                provider_error.status,
+                            )
+                            return validated, True
                 attempts.append(
                     Attempt(
                         platform,
@@ -548,6 +576,18 @@ class ResolverService:
             )
         except Exception:
             logger.warning("Resolution cache read failed", exc_info=True)
+            return None
+
+    async def _cache_get_stale_resolution(self, track_id: str, platform: str):
+        try:
+            return await self._cache.get_stale_resolution(
+                track_id,
+                platform,
+                float(self._clock()),
+                self._settings.stale_match_grace_seconds,
+            )
+        except Exception:
+            logger.warning("Stale resolution cache read failed", exc_info=True)
             return None
 
     async def _cache_put_metadata(self, track: SpotifyTrack) -> None:
