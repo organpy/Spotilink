@@ -82,6 +82,7 @@ class ResolveResponse(BaseModel):
     match: MatchSchema | None = None
     search_fallback: SearchFallbackSchema | None = None
     cached: bool = False
+    stale: bool = False
     metadata_cached: bool = False
     attempts: list[AttemptSchema] = Field(default_factory=list)
     error: ErrorSchema | None = None
@@ -99,6 +100,7 @@ def response_from_result(result: ResolutionResult) -> ResolveResponse:
             else None
         ),
         cached=result.cached,
+        stale=result.stale,
         metadata_cached=result.metadata_cached,
         attempts=[_attempt_schema(attempt) for attempt in result.attempts],
         error=None,
@@ -116,6 +118,7 @@ def response_from_error(exc: Any) -> ResolveResponse:
         match=None,
         search_fallback=_fallback_schema(fallback) if fallback is not None else None,
         cached=False,
+        stale=False,
         metadata_cached=bool(getattr(exc, "metadata_cached", False)),
         attempts=[_attempt_schema(attempt) for attempt in attempts],
         error=ErrorSchema(
