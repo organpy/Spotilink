@@ -24,6 +24,7 @@ This document is an operational checklist, not legal advice. Provider terms chan
 ## SoundCloud
 
 - Search uses the official SoundCloud API with OAuth 2.1 client credentials.
+- Registering an API application currently requires a SoundCloud Artist Pro subscription. Without it, leave SoundCloud unconfigured and operate YouTube-only.
 - No scraping of SoundCloud pages and no audio downloading or proxying.
 - Keep client credentials server-side.
 - Respect token issuance limits (historically 50 client-credential tokens per 12 hours per app and 30 per hour per IP) and all current API rate limits.
@@ -32,15 +33,16 @@ This document is an operational checklist, not legal advice. Provider terms chan
 
 ## Verification and fallbacks
 
-- A result in `match` cleared the configured score threshold and is the service's **verified** match.
+- A result in `match` cleared the configured score threshold and is the service's **verified** match. If `stale` is `true`, it came from an expired cache entry after a provider failure and has not been rechecked; present it as stale and possibly unavailable, not as freshly verified.
 - A result in `search_fallback` is an **unverified search URL** and must be presented as such.
 - Never describe a fallback as verified or official.
 - Provider search results may be incomplete, region-specific, or removed later. The resolver cannot guarantee that a previously cached URL remains playable.
+- When YouTube quota is exhausted, reuse cached verified matches where they are still within `STALE_MATCH_GRACE_SECONDS`, or return the unverified search fallback. Do not rotate projects or keys to evade quota.
 
 ## Data and operations
 
-- SQLite stores Spotify metadata, provider URLs, confidence scores, and timestamps. It does not store credentials or audio.
-- Default TTLs are 7 days for metadata and verified matches, 1 hour for negative provider results, and 5 minutes for Spotify "not found" responses.
+- SQLite stores Spotify metadata, provider URLs, confidence scores, and timestamps. It does not store credentials or audio. The default database path is `./data/resolver.db`, configurable with `DATABASE_PATH`.
+- Default TTLs are 7 days for metadata and verified matches, 1 hour for negative provider results, and 5 minutes for Spotify "not found" responses. Expired verified matches may be served stale for up to 30 days after provider failures (`STALE_MATCH_GRACE_SECONDS`).
 - Logs should not contain API keys, client secrets, OAuth tokens, or raw Spotify page state.
 - Use TLS at the edge if the API is exposed beyond localhost. Inbound rate limiting is intentionally simple and per process; add a gateway or shared limiter for multi-instance deployments.
 - This project is not affiliated with Spotify, YouTube, Google, or SoundCloud.
