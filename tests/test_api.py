@@ -5,13 +5,14 @@ from conftest import (
     TRACK_ID,
     TRACK_TITLE,
     FakeProvider,
+    MockClock,
     build_spotify_page,
     spotify_transport,
 )
 from fastapi.testclient import TestClient
 
 from spotify_resolver.config import Settings
-from spotify_resolver.errors import ProviderTimeout
+from spotify_resolver.errors import ProviderRateLimited, ProviderTimeout
 from spotify_resolver.main import create_app
 from spotify_resolver.models import Candidate
 
@@ -27,6 +28,7 @@ RESPONSE_KEYS = {
     "match",
     "search_fallback",
     "cached",
+    "stale",
     "metadata_cached",
     "attempts",
     "error",
@@ -57,6 +59,7 @@ def _client(
     soundcloud: FakeProvider | None = None,
     main_status: int = 200,
     embed_status: int = 200,
+    clock: MockClock | None = None,
 ) -> TestClient:
     providers = {
         "youtube": youtube or FakeProvider("youtube", configured=False),
@@ -70,6 +73,7 @@ def _client(
             embed_status=embed_status,
         ),
         providers=providers,
+        clock=clock,
     )
     return TestClient(app, raise_server_exceptions=False)
 
@@ -100,6 +104,7 @@ def test_resolve_returns_consistent_schema_and_caches(settings, sample_track) ->
         assert body["match"]["score"]["total"] == body["match"]["confidence"]
         assert body["search_fallback"] is None
         assert body["cached"] is False
+        assert body["stale"] is False
         assert body["metadata_cached"] is False
         assert body["attempts"][0]["status"] == "verified"
         assert body["error"] is None
@@ -116,6 +121,7 @@ def test_resolve_returns_consistent_schema_and_caches(settings, sample_track) ->
         cached_body = cached.json()
         assert set(cached_body) == RESPONSE_KEYS
         assert cached_body["cached"] is True
+        assert cached_body["stale"] is False
         assert cached_body["metadata_cached"] is True
     assert len(youtube.calls) == 1
 
@@ -163,6 +169,8 @@ def test_root_serves_showcase_page(settings) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     assert response.headers["cache-control"] == "no-store"
+    assert "<title>Spotilink</title>" in response.text
+    assert "https://destro.aetherics.dev/" in response.text
     assert 'id="resolve-form"' in response.text
     assert 'id="spotify-url"' in response.text
     assert 'id="raw-response"' in response.text
@@ -264,7 +272,77 @@ def test_provider_timeout_returns_504(settings, sample_track) -> None:
     assert body["ok"] is False
     assert body["error"]["code"] == "providers_timeout"
     assert body["error"]["retryable"] is True
+    assert body["stale"] is False
     assert body["search_fallback"]["verified"] is False
+
+
+def test_provider_rate_limit_returns_503_with_search_fallback(
+    settings, sample_track
+) -> None:
+    provider = FakeProvider("youtube", error=ProviderRateLimited("quota"))
+    with _client(settings, youtube=provider) as client:
+        response = client.get(
+            "/v1/resolve",
+            params={
+                "url": sample_track.url,
+                "platform": "youtube",
+                "fallback": "false",
+            },
+        )
+    assert response.status_code == 503
+    body = response.json()
+    assert set(body) == RESPONSE_KEYS
+    assert body["ok"] is False
+    assert body["error"]["code"] == "providers_rate_limited"
+    assert body["stale"] is False
+    assert body["search_fallback"]["verified"] is False
+    assert body["search_fallback"]["reason"] == "provider_unavailable"
+    assert body["attempts"][0]["status"] == "rate_limited"
+
+
+def test_stale_match_is_returned_when_provider_is_rate_limited(
+    make_settings,
+    sample_track,
+) -> None:
+    settings = make_settings(
+        match_cache_ttl_seconds=10,
+        stale_match_grace_seconds=100,
+    )
+    clock = MockClock()
+    youtube = FakeProvider("youtube", [_candidate()])
+    with _client(settings, youtube=youtube, clock=clock) as client:
+        first = client.get(
+            "/v1/resolve",
+            params={
+                "url": sample_track.url,
+                "platform": "youtube",
+                "fallback": "false",
+            },
+        )
+        assert first.status_code == 200
+        assert first.json()["stale"] is False
+
+        clock.advance(20)
+        youtube.candidates = []
+        youtube.error = ProviderRateLimited("quota")
+        stale = client.get(
+            "/v1/resolve",
+            params={
+                "url": sample_track.url,
+                "platform": "youtube",
+                "fallback": "false",
+            },
+        )
+
+    assert stale.status_code == 200
+    body = stale.json()
+    assert set(body) == RESPONSE_KEYS
+    assert body["ok"] is True
+    assert body["cached"] is True
+    assert body["stale"] is True
+    assert body["match"]["url"] == _candidate().url
+    assert body["search_fallback"] is None
+    assert body["attempts"][0]["status"] == "stale"
 
 
 def test_cross_platform_fallback(settings, sample_track) -> None:

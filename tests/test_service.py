@@ -122,10 +122,7 @@ async def test_no_match_returns_unverified_search_fallback(
         assert second.attempts[0].cached is True
     finally:
         await cache.close()
-    assert provider.calls == [
-        '"Rick Astley" "Never Gonna Give You Up" topic',
-        '"Rick Astley" "Never Gonna Give You Up"',
-    ]
+    assert provider.calls == ['"Rick Astley" "Never Gonna Give You Up" topic']
     assert spotify.calls == 1
 
 
@@ -155,7 +152,6 @@ async def test_negative_cache_expires(
         await cache.close()
     assert provider.calls == [
         '"Rick Astley" "Never Gonna Give You Up" topic',
-        '"Rick Astley" "Never Gonna Give You Up"',
         '"Rick Astley" "Never Gonna Give You Up" topic',
     ]
     assert spotify.calls == 1
@@ -283,10 +279,7 @@ async def test_negative_cache_survives_metadata_expiry(
         assert second.metadata_cached is True
     finally:
         await cache.close()
-    assert provider.calls == [
-        '"Rick Astley" "Never Gonna Give You Up" topic',
-        '"Rick Astley" "Never Gonna Give You Up"',
-    ]
+    assert provider.calls == ['"Rick Astley" "Never Gonna Give You Up" topic']
     assert spotify.calls == 1
 
 
@@ -325,7 +318,7 @@ async def test_cached_match_is_revalidated_against_current_threshold(
         assert second.metadata_cached is True
     finally:
         await stricter_cache.close()
-    assert len(provider.calls) == 3
+    assert len(provider.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -424,9 +417,10 @@ async def test_provider_rate_limit_error(settings, sample_track: SpotifyTrack) -
 
 @pytest.mark.asyncio
 async def test_extra_query_failure_keeps_earlier_verified_match(
-    settings,
+    make_settings,
     sample_track: SpotifyTrack,
 ) -> None:
+    settings = make_settings(youtube_max_queries=2)
     provider = FakeProvider(
         "youtube",
         [_candidate(duration_ms=240_573, artist="Rick Astley", is_topic=False)],
@@ -442,6 +436,114 @@ async def test_extra_query_failure_keeps_earlier_verified_match(
         assert result.match is not None
         assert result.attempts[0].status == "verified"
         assert len(provider.calls) == 2
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_match_is_served_when_provider_fails(
+    make_settings,
+    sample_track: SpotifyTrack,
+) -> None:
+    settings = make_settings(
+        match_cache_ttl_seconds=10,
+        stale_match_grace_seconds=100,
+    )
+    clock = MockClock()
+    provider = FakeProvider("youtube", [_candidate()])
+    cache, service, spotify = await _service(
+        settings,
+        {"youtube": provider},
+        sample_track,
+        clock=clock,
+    )
+    try:
+        first = await service.resolve(sample_track.url, "youtube", False)
+        assert first.match is not None
+        assert first.stale is False
+
+        clock.advance(20)
+        provider.candidates = []
+        provider.error = ProviderRateLimited("quota")
+
+        stale = await service.resolve(sample_track.url, "youtube", False)
+
+        assert stale.match is not None
+        assert stale.match.candidate.url == _candidate().url
+        assert stale.cached is True
+        assert stale.stale is True
+        assert stale.search_fallback is None
+        assert [(a.platform, a.status, a.cached) for a in stale.attempts] == [
+            ("youtube", "stale", True)
+        ]
+    finally:
+        await cache.close()
+
+    assert len(provider.calls) == 2
+    assert spotify.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_match_outside_grace_is_not_served(
+    make_settings,
+    sample_track: SpotifyTrack,
+) -> None:
+    settings = make_settings(
+        match_cache_ttl_seconds=10,
+        stale_match_grace_seconds=5,
+    )
+    clock = MockClock()
+    provider = FakeProvider("youtube", [_candidate()])
+    cache, service, _spotify = await _service(
+        settings,
+        {"youtube": provider},
+        sample_track,
+        clock=clock,
+    )
+    try:
+        await service.resolve(sample_track.url, "youtube", False)
+        clock.advance(20)
+        provider.candidates = []
+        provider.error = ProviderRateLimited("quota")
+
+        with pytest.raises(ResolverError) as error:
+            await service.resolve(sample_track.url, "youtube", False)
+
+        assert error.value.status_code == 503
+        assert error.value.code == "providers_rate_limited"
+        assert error.value.search_fallback is not None
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_match_is_not_used_for_a_normal_no_match(
+    make_settings,
+    sample_track: SpotifyTrack,
+) -> None:
+    settings = make_settings(
+        match_cache_ttl_seconds=10,
+        stale_match_grace_seconds=100,
+    )
+    clock = MockClock()
+    provider = FakeProvider("youtube", [_candidate()])
+    cache, service, _spotify = await _service(
+        settings,
+        {"youtube": provider},
+        sample_track,
+        clock=clock,
+    )
+    try:
+        await service.resolve(sample_track.url, "youtube", False)
+        clock.advance(20)
+        provider.candidates = []
+
+        result = await service.resolve(sample_track.url, "youtube", False)
+
+        assert result.match is None
+        assert result.stale is False
+        assert result.search_fallback is not None
+        assert result.attempts[0].status == "no_match"
     finally:
         await cache.close()
 
@@ -492,7 +594,7 @@ async def test_cross_platform_fallback(settings, sample_track: SpotifyTrack) -> 
         assert second.cached is True
     finally:
         await cache.close()
-    assert len(youtube.calls) == 2
+    assert len(youtube.calls) == 1
     assert len(soundcloud.calls) == 1
     assert spotify.calls == 1
 
@@ -524,7 +626,7 @@ async def test_fallback_disabled_does_not_search_other_platform(
         assert result.search_fallback is not None
     finally:
         await cache.close()
-    assert len(youtube.calls) == 2
+    assert len(youtube.calls) == 1
     assert soundcloud.calls == []
 
 

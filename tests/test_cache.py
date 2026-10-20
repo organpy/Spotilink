@@ -114,6 +114,145 @@ async def test_resolution_cache_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_stale_resolution_round_trip(
+    settings, sample_track: SpotifyTrack
+) -> None:
+    cache = Cache(settings.database_path)
+    await cache.initialize()
+    try:
+        scored = _scored(sample_track)
+        await cache.put_resolution(
+            sample_track,
+            "youtube",
+            "matched",
+            candidate=scored,
+            best_confidence=scored.score.total,
+            now=1_000.0,
+            ttl_seconds=10,
+        )
+        stale = await cache.get_stale_resolution(
+            sample_track.spotify_id,
+            "youtube",
+            1_020.0,
+            100,
+        )
+        assert stale is not None
+        assert stale.status == "matched"
+        assert stale.candidate is not None
+        assert stale.candidate.candidate.url == scored.candidate.url
+        assert (
+            await cache.get_stale_resolution(
+                sample_track.spotify_id,
+                "youtube",
+                1_200.0,
+                100,
+            )
+            is None
+        )
+        assert (
+            await cache.get_stale_resolution(
+                sample_track.spotify_id,
+                "youtube",
+                1_020.0,
+                0,
+            )
+            is None
+        )
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_negative_resolution_is_not_returned(
+    settings, sample_track: SpotifyTrack
+) -> None:
+    cache = Cache(settings.database_path)
+    await cache.initialize()
+    try:
+        await cache.put_resolution(
+            sample_track,
+            "youtube",
+            "not_found",
+            candidate=None,
+            best_confidence=0.52,
+            now=1_000.0,
+            ttl_seconds=10,
+        )
+        assert (
+            await cache.get_stale_resolution(
+                sample_track.spotify_id,
+                "youtube",
+                1_020.0,
+                100,
+            )
+            is None
+        )
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
+async def test_prune_retains_stale_matches_for_grace_period(
+    settings, sample_track: SpotifyTrack
+) -> None:
+    cache = Cache(settings.database_path)
+    await cache.initialize()
+    try:
+        scored = _scored(sample_track)
+        await cache.put_resolution(
+            sample_track,
+            "youtube",
+            "matched",
+            candidate=scored,
+            best_confidence=scored.score.total,
+            now=1_000.0,
+            ttl_seconds=10,
+        )
+        await cache.put_resolution(
+            sample_track,
+            "soundcloud",
+            "not_found",
+            candidate=None,
+            best_confidence=0.52,
+            now=1_000.0,
+            ttl_seconds=10,
+        )
+
+        await cache.prune(1_020.0, stale_match_grace_seconds=100)
+        assert (
+            await cache.get_stale_resolution(
+                sample_track.spotify_id,
+                "youtube",
+                1_020.0,
+                100,
+            )
+            is not None
+        )
+        assert (
+            await cache.get_stale_resolution(
+                sample_track.spotify_id,
+                "soundcloud",
+                1_020.0,
+                100,
+            )
+            is None
+        )
+
+        await cache.prune(1_200.0, stale_match_grace_seconds=100)
+        assert (
+            await cache.get_stale_resolution(
+                sample_track.spotify_id,
+                "youtube",
+                1_200.0,
+                100,
+            )
+            is None
+        )
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
 async def test_negative_resolution_cache(settings, sample_track: SpotifyTrack) -> None:
     cache = Cache(settings.database_path)
     await cache.initialize()
