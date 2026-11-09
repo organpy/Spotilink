@@ -235,6 +235,7 @@ def _parse_video_details(data: Any, video_ids: list[str]) -> list[Candidate]:
                 is_topic=bool(re.search(r"\s*-\s*topic\s*$", channel_lower)),
                 is_vevo=channel_lower.endswith("vevo"),
                 official_hint=bool(re.search(r"\bofficial\b", channel_lower)),
+                source="youtube_data_api",
             )
         )
     return candidates
@@ -261,11 +262,19 @@ def parse_iso8601_duration(value: Any) -> int | None:
 
 def _classify_status_error(exc: HttpStatusError) -> Exception:
     if exc.status_code == 429:
-        return ProviderRateLimited("YouTube rate limit exceeded")
+        return ProviderRateLimited(
+            "YouTube rate limit exceeded",
+            upstream=True,
+            retry_after_seconds=exc.retry_after,
+        )
     if exc.status_code in {400, 403}:
         reasons = _youtube_error_reasons(exc.body)
         if reasons & _QUOTA_REASONS:
-            return ProviderRateLimited("YouTube API quota or rate limit exceeded")
+            return ProviderRateLimited(
+                "YouTube API quota or rate limit exceeded",
+                upstream=True,
+                retry_after_seconds=exc.retry_after,
+            )
         if reasons & _AUTH_REASONS:
             return ProviderAuthError("YouTube API key was rejected")
         return ProviderUpstreamError("YouTube API request was rejected")

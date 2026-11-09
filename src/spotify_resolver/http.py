@@ -144,6 +144,30 @@ class LimitedHttpClient:
         )
         return self._decode_json(body)
 
+    async def post_json(
+        self,
+        url: str,
+        *,
+        payload: Any,
+        max_bytes: int,
+        timeout: float,
+        allowed_hosts: set[str] | frozenset[str],
+        headers: Mapping[str, str] | None = None,
+    ) -> Any:
+        request_headers = {"Content-Type": "application/json;charset=UTF-8"}
+        request_headers.update(headers or {})
+        body = await self._request_bytes(
+            "POST",
+            url,
+            max_bytes=max_bytes,
+            timeout=timeout,
+            allowed_hosts=allowed_hosts,
+            max_redirects=0,
+            headers=request_headers,
+            content=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        )
+        return self._decode_json(body)
+
     @staticmethod
     def _decode_json(body: bytes) -> Any:
         try:
@@ -164,6 +188,7 @@ class LimitedHttpClient:
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, str] | None = None,
         auth: tuple[str, str] | None = None,
+        content: bytes | None = None,
     ) -> bytes:
         attempt = 0
         while True:
@@ -179,6 +204,7 @@ class LimitedHttpClient:
                     params=params,
                     data=data,
                     auth=auth,
+                    content=content,
                 )
             except HttpStatusError as exc:
                 if not exc.retryable or attempt >= self._max_retries:
@@ -199,6 +225,7 @@ class LimitedHttpClient:
         params: Mapping[str, Any] | None = None,
         data: Mapping[str, str] | None = None,
         auth: tuple[str, str] | None = None,
+        content: bytes | None = None,
     ) -> bytes:
         current_url = url
         redirects = 0
@@ -212,6 +239,7 @@ class LimitedHttpClient:
                     params=params,
                     headers=request_headers or None,
                     data=data,
+                    content=content,
                     auth=auth,
                     timeout=httpx.Timeout(
                         timeout,

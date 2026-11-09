@@ -55,3 +55,39 @@ def test_invalid_settings_are_rejected() -> None:
         Settings.from_env({"SPOTIFY_MAX_REDIRECTS": "-1"})
     with pytest.raises(ValueError):
         Settings.from_env({"STALE_MATCH_GRACE_SECONDS": "-1"})
+
+
+def test_v2_defaults_and_overrides() -> None:
+    defaults = Settings.from_env({})
+    assert defaults.yt_music_enabled is True
+    assert defaults.yt_music_concurrency == 3
+    assert defaults.spotify_playlist_extractor == "auto"
+    assert defaults.playlist_max_tracks == 1000
+    assert defaults.primary_resolver_cooldown == 300
+    custom = Settings.from_env(
+        {
+            "YT_MUSIC_ENABLED": "false",
+            "SPOTIFY_PLAYLIST_EXTRACTOR": "WebPlayer",
+            "PLAYLIST_MAX_TRACKS": "50",
+            "PRIMARY_RESOLVER_COOLDOWN": "0",
+        }
+    )
+    assert custom.yt_music_enabled is False
+    assert custom.spotify_playlist_extractor == "webplayer"
+    assert custom.playlist_max_tracks == 50 and custom.primary_resolver_cooldown == 0
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"SPOTIFY_PLAYLIST_EXTRACTOR": "magic"},
+        {"PLAYLIST_MAX_TRACKS": "0"},
+        {"YT_MUSIC_MATCH_THRESHOLD": "1.5"},
+        {"YT_MUSIC_UNCERTAIN_THRESHOLD": "0.9", "YT_MUSIC_MATCH_THRESHOLD": "0.5"},
+        {"SPOTIFY_PLAYLIST_PAGE_SIZE": "1000"},
+        {"PRIMARY_RESOLVER_COOLDOWN": "-1"},
+    ],
+)
+def test_v2_invalid_values_rejected(env: dict[str, str]) -> None:
+    with pytest.raises(ValueError):
+        Settings.from_env(env)

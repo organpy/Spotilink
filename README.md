@@ -12,7 +12,7 @@
 
 ## Quick start
 
-You need Python 3.12+, [`uv`](https://docs.astral.sh/uv/), and at least one provider API key.
+You need Python 3.12+, [`uv`](https://docs.astral.sh/uv/), and at least one provider API key, or none at all in v2 (`ytmusicapi` needs no key).
 
 ```bash
 uv sync --all-groups
@@ -38,6 +38,24 @@ A successful lookup returns a verified `match`; when nothing clears the confiden
 
 Parameters, response examples, status codes, and stale-cache behavior are in the **[API reference](docs/api.md)**.
 
+## v2: playlists and fallback
+
+`POST /v2/resolve` accepts a Spotify track, a Spotify playlist or a YouTube playlist URL.
+Tracks resolve immediately; playlists become background jobs you poll
+(`GET /v2/jobs/{id}`, `GET /v2/jobs/{id}/tracks`) with ordered, paginated results
+that appear as they are matched. Spotify playlists are matched with `ytmusicapi`;
+YouTube playlists are listed with `yt-dlp` (metadata only). Single-track resolution
+falls back to `ytmusicapi` automatically when the YouTube Data API is out of quota.
+Full details: **[v2 guide](docs/v2.md)** and **[Spotify extraction results](docs/v2-spotify-extraction.md)**.
+
+```bash
+curl -X POST http://127.0.0.1:8000/v2/resolve -H 'content-type: application/json' \
+  -d '{"url": "https://open.spotify.com/playlist/7EAqBCOVkDZcbccjxZmgjp"}'
+# -> 202 {"job_id": "job_…", "status_url": "/v2/jobs/job_…", …}
+```
+
+With `YT_MUSIC_ENABLED=true` (default) SpotiLink also works without any API key.
+
 ## How it works
 
 Spotilink fetches the public Spotify track page, searches official provider APIs, and verifies title, artist, and duration before caching a result.
@@ -46,7 +64,9 @@ Want to know how it works in depth? Read the **[development notes](docs/developm
 
 ## Documentation
 
-- [API reference](docs/api.md)
+- [API reference (v1)](docs/api.md)
+- [v2 guide: playlists, jobs, fallback](docs/v2.md)
+- [Spotify playlist extraction results](docs/v2-spotify-extraction.md)
 - [Development notes](docs/development.md)
 - [Architecture](docs/architecture.md)
 - [Provider terms](docs/provider-terms.md)

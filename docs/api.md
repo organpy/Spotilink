@@ -2,6 +2,8 @@
 
 See the [README](../README.md) for setup and the [development notes](development.md) for matching, caching, provider limits, and configuration.
 
+This page documents the v1 endpoint, which is unchanged. Playlists, jobs and the `ytmusicapi` fallback are documented in the [v2 guide](v2.md).
+
 ## `GET /v1/resolve`
 
 | Parameter | Required | Default | Description |

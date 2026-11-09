@@ -291,6 +291,7 @@ def _parse_tracks(data: Any) -> list[Candidate]:
                 official_hint=user.get("verified") is True
                 if isinstance(user, dict)
                 else False,
+                source="soundcloud_api",
             )
         )
     return candidates
