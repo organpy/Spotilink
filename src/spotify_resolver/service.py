@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable, Mapping
 
 from .cache import Cache
+from .circuit import CircuitBreaker
 from .concurrency import KeyedLocks
 from .config import Settings
 from .errors import (
@@ -36,6 +37,7 @@ from .models import (
     SpotifyTrack,
 )
 from .providers.base import Provider
+from .providers.ytmusic import YTMusicMatcher
 from .spotify import SpotifyClient, parse_spotify_track_url
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,8 @@ logger = logging.getLogger(__name__)
 _STALE_FALLBACK_STATUSES = frozenset(
     {"rate_limited", "timeout", "auth_error", "upstream_error"}
 )
+# Primary-provider failures that open the circuit breaker.
+_BREAKER_STATUSES = frozenset({"rate_limited", "auth_error"})
 
 
 class ResolverService:
@@ -54,6 +58,8 @@ class ResolverService:
         providers: Mapping[str, Provider],
         *,
         clock: Callable[[], float] = time.time,
+        youtube_fallback: YTMusicMatcher | None = None,
+        primary_breaker: CircuitBreaker | None = None,
     ) -> None:
         self._settings = settings
         self._spotify = spotify
@@ -63,6 +69,18 @@ class ResolverService:
         self._clock = clock
         self._metadata_locks = KeyedLocks()
         self._resolution_locks = KeyedLocks()
+        self._youtube_fallback = (
+            youtube_fallback
+            if youtube_fallback is not None and youtube_fallback.configured
+            else None
+        )
+        self._primary_breaker = primary_breaker
+
+    def platform_available(self, platform: str) -> bool:
+        provider = self._providers.get(platform)
+        if provider is not None and provider.configured:
+            return True
+        return platform == "youtube" and self._youtube_fallback is not None
 
     async def resolve(
         self,
@@ -86,7 +104,7 @@ class ResolverService:
                 status_code=422,
             ) from exc
 
-        if not any(provider.configured for provider in self._providers.values()):
+        if not any(self.platform_available(platform) for platform in PLATFORMS):
             raise ResolverError(
                 "providers_not_configured",
                 "No provider is configured. Set YOUTUBE_API_KEY or SoundCloud credentials.",
@@ -94,10 +112,7 @@ class ResolverService:
             )
 
         fallback_platform = _other_platform(preferred_platform)
-        preferred_provider = self._providers.get(preferred_platform)
-        if (
-            preferred_provider is None or not preferred_provider.configured
-        ) and not allow_fallback:
+        if not self.platform_available(preferred_platform) and not allow_fallback:
             raise ResolverError(
                 "provider_not_configured",
                 f"The requested platform ({preferred_platform}) is not configured and fallback is disabled.",
@@ -149,9 +164,7 @@ class ResolverService:
                 cached_negative[preferred_platform] = preferred_cache
                 preferred_negative = True
 
-            preferred_unavailable = (
-                preferred_provider is None or not preferred_provider.configured
-            )
+            preferred_unavailable = not self.platform_available(preferred_platform)
             if allow_fallback and (preferred_negative or preferred_unavailable):
                 fallback_cache = await self._cache_get_resolution(
                     track_id, fallback_platform
@@ -215,8 +228,7 @@ class ResolverService:
                 )
                 continue
 
-            provider = self._providers.get(platform)
-            if provider is None or not provider.configured:
+            if not self.platform_available(platform):
                 attempts.append(Attempt(platform, "not_configured"))
                 continue
 
@@ -293,54 +305,13 @@ class ResolverService:
                     )
                     return None, True
 
-            provider = self._providers.get(platform)
-            if provider is None or not provider.configured:
+            if not self.platform_available(platform):
                 attempts.append(Attempt(platform, "not_configured"))
                 return None, False
 
-            max_queries = (
-                self._settings.soundcloud_max_queries
-                if platform == "soundcloud"
-                else self._settings.youtube_max_queries
+            accepted, best_confidence, provider_error, searched = await self._search(
+                track, platform
             )
-            limit = (
-                self._settings.soundcloud_max_results
-                if platform == "soundcloud"
-                else self._settings.youtube_max_results
-            )
-            queries = build_queries(track, platform, max_queries)
-            raw_candidates: dict[str, Candidate] = {}
-            ranked: list[ScoredCandidate] = []
-            best_confidence: float | None = None
-            provider_error: ProviderError | None = None
-
-            try:
-                for index, query in enumerate(queries):
-                    candidates = await provider.search(query, limit)
-                    for candidate in candidates:
-                        raw_candidates[candidate.url] = candidate
-                    ranked = rank_candidates(
-                        track,
-                        list(raw_candidates.values()),
-                        platform,
-                        self._scoring,
-                    )
-                    if ranked:
-                        best_confidence = ranked[0].score.total
-                    accepted = best_accepted(ranked, self._scoring)
-                    if accepted is not None:
-                        remaining = index + 1 < len(queries)
-                        strong_enough = (
-                            accepted.score.total
-                            >= self._scoring.threshold
-                            + self._settings.search_extra_query_margin
-                        )
-                        if not remaining or strong_enough:
-                            break
-            except ProviderError as exc:
-                provider_error = exc
-
-            accepted = best_accepted(ranked, self._scoring)
             if accepted is not None:
                 now = float(self._clock())
                 await self._cache_put_resolution(
@@ -396,16 +367,16 @@ class ResolverService:
                 )
                 return None, False
 
-            now = float(self._clock())
-            await self._cache_put_resolution(
-                track,
-                platform,
-                "not_found",
-                candidate=None,
-                best_confidence=best_confidence,
-                now=now,
-                ttl_seconds=self._settings.negative_cache_ttl_seconds,
-            )
+            if searched:
+                await self._cache_put_resolution(
+                    track,
+                    platform,
+                    "not_found",
+                    candidate=None,
+                    best_confidence=best_confidence,
+                    now=float(self._clock()),
+                    ttl_seconds=self._settings.negative_cache_ttl_seconds,
+                )
             attempts.append(
                 Attempt(
                     platform,
@@ -415,6 +386,123 @@ class ResolverService:
                 )
             )
             return None, False
+
+    async def _search(
+        self, track: SpotifyTrack, platform: str
+    ) -> tuple[ScoredCandidate | None, float | None, ProviderError | None, bool]:
+        """Search the platform's provider chain.
+
+        Returns (accepted, best_confidence, provider_error, searched). For
+        YouTube the chain is the YouTube Data API (guarded by a circuit
+        breaker) followed by the ytmusicapi fallback when the primary fails,
+        is skipped, or finds no acceptable match. `searched` is True only when
+        every provider that should have been asked completed its search, so a
+        negative result can safely be cached.
+        """
+        provider = self._providers.get(platform)
+        primary_configured = provider is not None and provider.configured
+        fallback = self._youtube_fallback if platform == "youtube" else None
+        breaker = self._primary_breaker if platform == "youtube" else None
+
+        accepted: ScoredCandidate | None = None
+        best_confidence: float | None = None
+        primary_error: ProviderError | None = None
+        primary_completed = False
+
+        if primary_configured and (breaker is None or breaker.allow()):
+            assert provider is not None
+            accepted, best_confidence, primary_error = await self._search_provider(
+                track, platform, provider
+            )
+            primary_completed = primary_error is None
+            if breaker is not None:
+                self._update_breaker(breaker, platform, primary_error)
+        elif primary_configured:
+            logger.info("Primary %s resolver skipped: circuit open", platform)
+
+        if accepted is not None or fallback is None:
+            return accepted, best_confidence, primary_error, primary_completed
+
+        outcome = await fallback.match(track, scoring=self._scoring)
+        if outcome.best_confidence is not None:
+            best_confidence = max(best_confidence or 0.0, outcome.best_confidence)
+        if outcome.status == "matched":
+            return outcome.match, best_confidence, None, True
+        fallback_completed = outcome.error is None
+        if primary_completed or fallback_completed:
+            # At least one provider finished searching without a match. Cache
+            # the negative result only if no provider was skipped or failed.
+            primary_done = primary_completed or not primary_configured
+            return None, best_confidence, None, primary_done and fallback_completed
+        return None, best_confidence, primary_error or outcome.error, False
+
+    def _update_breaker(
+        self,
+        breaker: CircuitBreaker,
+        platform: str,
+        error: ProviderError | None,
+    ) -> None:
+        if error is None:
+            breaker.record_success()
+            return
+        tripping = error.status == "auth_error" or (
+            error.status == "rate_limited" and getattr(error, "upstream", False)
+        )
+        if tripping:
+            breaker.record_failure(
+                error.status, getattr(error, "retry_after_seconds", None)
+            )
+            logger.warning(
+                "Primary %s resolver unavailable (%s); preferring fallback",
+                platform,
+                error.status,
+            )
+        else:
+            breaker.release()
+
+    async def _search_provider(
+        self, track: SpotifyTrack, platform: str, provider: Provider
+    ) -> tuple[ScoredCandidate | None, float | None, ProviderError | None]:
+        max_queries = (
+            self._settings.soundcloud_max_queries
+            if platform == "soundcloud"
+            else self._settings.youtube_max_queries
+        )
+        limit = (
+            self._settings.soundcloud_max_results
+            if platform == "soundcloud"
+            else self._settings.youtube_max_results
+        )
+        queries = build_queries(track, platform, max_queries)
+        raw_candidates: dict[str, Candidate] = {}
+        ranked: list[ScoredCandidate] = []
+        best_confidence: float | None = None
+        try:
+            for index, query in enumerate(queries):
+                candidates = await provider.search(query, limit)
+                for candidate in candidates:
+                    raw_candidates[candidate.url] = candidate
+                ranked = rank_candidates(
+                    track,
+                    list(raw_candidates.values()),
+                    platform,
+                    self._scoring,
+                )
+                if ranked:
+                    best_confidence = ranked[0].score.total
+                accepted = best_accepted(ranked, self._scoring)
+                if accepted is not None:
+                    remaining = index + 1 < len(queries)
+                    strong_enough = (
+                        accepted.score.total
+                        >= self._scoring.threshold
+                        + self._settings.search_extra_query_margin
+                    )
+                    if not remaining or strong_enough:
+                        break
+        except ProviderError as exc:
+            return best_accepted(ranked, self._scoring), best_confidence, exc
+        return best_accepted(ranked, self._scoring), best_confidence, None
 
     async def _get_metadata(self, track_id: str) -> tuple[SpotifyTrack, bool]:
         async with self._metadata_locks.lock(f"metadata:{track_id}"):

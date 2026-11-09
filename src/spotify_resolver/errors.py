@@ -51,8 +51,18 @@ class ProviderTimeout(ProviderError):
 
 
 class ProviderRateLimited(ProviderError):
-    def __init__(self, message: str = "Provider rate limit exceeded") -> None:
+    def __init__(
+        self,
+        message: str = "Provider rate limit exceeded",
+        *,
+        upstream: bool = False,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         super().__init__("rate_limited", message)
+        # True when the upstream service (not a local token bucket) refused
+        # the request because of quota exhaustion or rate limiting.
+        self.upstream = upstream
+        self.retry_after_seconds = retry_after_seconds
 
 
 class ProviderAuthError(ProviderError):

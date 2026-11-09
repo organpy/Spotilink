@@ -12,12 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import InboundRateLimitMiddleware, install_exception_handlers, router
 from .cache import Cache
+from .circuit import CircuitBreaker
 from .concurrency import SlidingWindowLimiter
 from .config import Settings
 from .http import LimitedHttpClient
 from .providers.base import Provider
 from .providers.soundcloud import SoundCloudProvider
 from .providers.youtube import YouTubeProvider
+from .providers.ytmusic import YTMusicClient, YTMusicMatcher
 from .service import ResolverService
 from .spotify import SpotifyClient
 
@@ -31,6 +33,7 @@ def create_app(
     providers: Mapping[str, Provider] | None = None,
     clock: Callable[[], float] | None = None,
     http_sleep: Callable[[float], Awaitable[None]] | None = None,
+    ytmusic: YTMusicClient | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings.from_env()
     epoch_clock = clock or time.time
@@ -88,12 +91,25 @@ def create_app(
         else:
             provider_map = dict(providers)
 
+        ytmusic_client = ytmusic
+        if ytmusic_client is None and app_settings.yt_music_enabled:
+            ytmusic_client = YTMusicClient(app_settings)
+        matcher = (
+            YTMusicMatcher.from_settings(ytmusic_client, app_settings)
+            if ytmusic_client is not None and ytmusic_client.configured
+            else None
+        )
+        primary_breaker = CircuitBreaker(
+            "youtube_data_api", app_settings.primary_resolver_cooldown
+        )
         service = ResolverService(
             app_settings,
             spotify,
             cache,
             provider_map,
             clock=epoch_clock,
+            youtube_fallback=matcher,
+            primary_breaker=primary_breaker,
         )
         app.state.raw_http = raw_http
         app.state.http = http
@@ -101,6 +117,8 @@ def create_app(
         app.state.cache = cache
         app.state.providers = provider_map
         app.state.service = service
+        app.state.ytmusic_matcher = matcher
+        app.state.primary_breaker = primary_breaker
         try:
             yield
         finally:

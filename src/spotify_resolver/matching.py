@@ -111,6 +111,7 @@ _MISSING_VERSION_PENALTIES: dict[str, float] = {
 
 _CHANNEL_VERSION_TAGS = {
     "karaoke",
+    "tribute",
     "cover",
     "nightcore",
     "instrumental",
@@ -213,9 +214,10 @@ def title_similarity(left: str, right: str) -> float:
     compact_right = right_clean.replace(" ", "")
     if compact_left == compact_right:
         return 1.0
-    if min(len(compact_left), len(compact_right)) >= 4 and (
-        compact_left in compact_right or compact_right in compact_left
-    ):
+    shorter, longer = sorted((compact_left, compact_right), key=len)
+    # Containment only counts when the contained title is a substantial part
+    # of the other one; "Cafe" inside a long compilation title is no match.
+    if len(shorter) >= 4 and shorter in longer and len(shorter) * 2 >= len(longer):
         return 0.95
 
     left_tokens = set(left_clean.split())

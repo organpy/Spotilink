@@ -34,6 +34,10 @@ def make_settings(tmp_path: Path) -> Callable[..., Settings]:
             youtube_rate_limit_per_minute=0,
             soundcloud_rate_limit_per_minute=0,
             api_rate_limit_per_minute=0,
+            v2_rate_limit_per_minute=0,
+            # Tests never reach the live YouTube Music service unless a test
+            # injects a fake client explicitly.
+            yt_music_enabled=False,
         )
         return replace(base, **overrides)
 
@@ -323,3 +327,57 @@ def make_http_client(
         connect_timeout_seconds=settings.http_connect_timeout_seconds,
     )
     return raw, limited
+
+
+class FakeYTMusic:
+    """Stand-in for YTMusicClient keyed by search kind ("songs"/"videos")."""
+
+    def __init__(
+        self,
+        songs: list[Candidate] | None = None,
+        videos: list[Candidate] | None = None,
+        *,
+        error: Exception | None = None,
+        by_query: dict[str, dict[str, list[Candidate]]] | None = None,
+        configured: bool = True,
+    ) -> None:
+        self.results = {"songs": list(songs or []), "videos": list(videos or [])}
+        self.by_query = by_query or {}
+        self.error = error
+        self._configured = configured
+        self.calls: list[tuple[str, str]] = []
+
+    @property
+    def configured(self) -> bool:
+        return self._configured
+
+    async def search(self, query: str, kind: str, limit: int) -> list[Candidate]:
+        self.calls.append((query, kind))
+        if self.error is not None:
+            raise self.error
+        if query in self.by_query:
+            return list(self.by_query[query].get(kind, []))
+        return list(self.results[kind])
+
+
+def ytm_candidate(
+    title: str = TRACK_TITLE,
+    artist: str = "Rick Astley",
+    *,
+    video_id: str = "dQw4w9WgXcQ",
+    duration_ms: int | None = 213_000,
+    kind: str = "song",
+    video_type: str | None = None,
+) -> Candidate:
+    return Candidate(
+        platform="youtube",
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        title=title,
+        artist=artist,
+        uploader=artist.split(",")[0],
+        duration_ms=duration_ms,
+        is_topic=kind == "song",
+        official_hint=video_type == "MUSIC_VIDEO_TYPE_OMV",
+        extra={"result_type": kind, "video_type": video_type},
+        source="ytmusicapi",
+    )

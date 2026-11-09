@@ -33,6 +33,8 @@ class Candidate:
     is_vevo: bool = False
     official_hint: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+    # Which backend produced the candidate (youtube_data_api, ytmusicapi, ...).
+    source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +126,7 @@ def candidate_to_cache_dict(scored: ScoredCandidate) -> dict[str, Any]:
             "is_topic": candidate.is_topic,
             "is_vevo": candidate.is_vevo,
             "official_hint": candidate.official_hint,
+            "source": candidate.source,
         },
         "score": scored.score.as_dict(),
         "eligible": scored.eligible,
@@ -145,6 +148,7 @@ def scored_candidate_from_cache_dict(data: dict[str, Any]) -> ScoredCandidate:
         is_topic=bool(candidate_data.get("is_topic", False)),
         is_vevo=bool(candidate_data.get("is_vevo", False)),
         official_hint=bool(candidate_data.get("official_hint", False)),
+        source=_optional_str(candidate_data.get("source")),
     )
     score = ScoreBreakdown(
         title=float(score_data["title"]),
