@@ -74,6 +74,9 @@ def parse_next_data(page: str) -> dict[str, Any]:
 
 
 def token_from_next_data(document: dict[str, Any]) -> AnonymousToken:
+    page_props = (document.get("props") or {}).get("pageProps")
+    if isinstance(page_props, dict) and page_props.get("status") == 404:
+        raise PlaylistNotFound()
     try:
         session = document["props"]["pageProps"]["state"]["settings"]["session"]
         token = session["accessToken"]
