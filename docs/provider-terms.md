@@ -46,3 +46,9 @@ This document is an operational checklist, not legal advice. Provider terms chan
 - Logs should not contain API keys, client secrets, OAuth tokens, or raw Spotify page state.
 - Use TLS at the edge if the API is exposed beyond localhost. Inbound rate limiting is intentionally simple and per process; add a gateway or shared limiter for multi-instance deployments.
 - This project is not affiliated with Spotify, YouTube, Google, or SoundCloud.
+
+## v2 additions
+
+- **Spotify playlists** are read through the web player's internal GraphQL endpoint with the anonymous token Spotify embeds in its public embed pages. This is **not** the official Web API, is undocumented, may be restricted by Spotify's terms, and can stop working at any time. SpotiLink uses no accounts or credentials and does not attempt to bypass blocks: if access is denied it reports the failure.
+- **ytmusicapi** and **yt-dlp** use YouTube's non-public interfaces without authentication. Review YouTube's terms before exposing the service publicly. SpotiLink only searches and lists metadata; it never downloads, converts or proxies media, and `yt-dlp` runs with `skip_download` and flat extraction.
+- Keep request rates low (`YT_MUSIC_CONCURRENCY`, `PLAYLIST_MAX_CONCURRENT_JOBS`, `V2_RATE_LIMIT_PER_MINUTE`).
