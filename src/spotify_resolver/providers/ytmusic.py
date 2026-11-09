@@ -102,6 +102,9 @@ def classify_exception(exc: Exception) -> ProviderError:
         return ProviderTimeout("YouTube Music request timed out")
     if "HTTP 429" in text or "HTTP 403" in text:
         return ProviderRateLimited("YouTube Music throttled the request", upstream=True)
+    if "JSONDecodeError" in name:
+        # YouTube answered with an empty/non-JSON body: soft throttling.
+        return ProviderRateLimited("YouTube Music returned a non-JSON response", upstream=True)
     if "ConnectionError" in name or "HTTP 5" in text:
         return ProviderUpstreamError("YouTube Music was unavailable")
     logger.warning("Unexpected ytmusicapi failure: %s", name)

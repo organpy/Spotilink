@@ -116,7 +116,7 @@ def test_partial_matches_keep_order_duplicates_and_do_not_abort(v2settings) -> N
         assert tracks[1]["status"] == "unmatched" and tracks[1]["youtube_url"] is None
         assert tracks[4]["status"] == "failed"
         # Duplicate track searched once.
-        assert sum(q.endswith(" 1") for q in ytm.calls) == 2  # songs search only, once
+        assert sum(q.endswith(" 1") for q in ytm.calls) == 1  # one search for both occurrences
 
 
 def test_incomplete_extraction_is_reported_separately(v2settings) -> None:

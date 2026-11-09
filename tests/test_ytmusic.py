@@ -69,6 +69,7 @@ def test_parse_results_rejects_non_list() -> None:
         (type("ReadTimeout", (Exception,), {})("t"), ProviderTimeout),
         (Exception("Server returned HTTP 429: Too Many Requests."), ProviderRateLimited),
         (type("ConnectionError", (Exception,), {})("c"), ProviderUpstreamError),
+        (type("JSONDecodeError", (Exception,), {})("Expecting value"), ProviderRateLimited),
         (KeyError("contents"), ProviderUpstreamError),
     ],
 )

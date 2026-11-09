@@ -26,7 +26,8 @@ import os
 import secrets
 import socket
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,7 @@ ACTIVE_STATUSES = ("queued", "extracting", "matching")
 FINAL_STATUSES = ("completed", "partial", "failed")
 TRACK_STATUSES = ("pending", "matched", "uncertain", "unmatched", "unavailable", "failed")
 _MAX_JOB_ATTEMPTS = 3
-_MAX_TRACK_RETRIES = 2
+_MAX_TRACK_RETRIES = 3
 _CONSECUTIVE_FAILURE_LIMIT = 8
 
 _SCHEMA = """
@@ -201,6 +202,29 @@ class JobStore:
     def _now(self) -> int:
         return int(self._clock())
 
+    @asynccontextmanager
+    async def _txn(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Serialised `BEGIN IMMEDIATE` transaction.
+
+        On any exit other than a clean one the transaction is rolled back if
+        (and only if) it is still open. A cancellation that lands while COMMIT
+        is already executing in the SQLite thread leaves nothing to roll back;
+        that must not mask the original exception.
+        """
+        async with self._lock:
+            db = self._require()
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                yield db
+                await db.execute("COMMIT")
+            except BaseException:
+                if db.in_transaction:
+                    try:
+                        await asyncio.shield(db.execute("ROLLBACK"))
+                    except Exception:
+                        logger.warning("Job transaction rollback failed", exc_info=True)
+                raise
+
     def _require(self) -> aiosqlite.Connection:
         if self._db is None:
             raise RuntimeError("JobStore has not been initialized")
@@ -247,7 +271,9 @@ class JobStore:
               AND (
                 status IN ('queued', 'extracting', 'matching')
                 OR (status = 'completed' AND finished_at > ?)
-                OR (status = 'partial' AND finished_at > ?)
+                OR (status = 'partial' AND finished_at > ?
+                    AND NOT EXISTS (SELECT 1 FROM job_tracks t
+                                    WHERE t.job_id = jobs.job_id AND t.status = 'failed'))
               )
             ORDER BY created_at DESC LIMIT 1
             """,
@@ -298,42 +324,33 @@ class JobStore:
     async def claim(self, owner: str, lease_seconds: int) -> aiosqlite.Row | None:
         """Atomically lease the oldest runnable job (queued or lease-expired)."""
         now = self._now()
-        async with self._lock:
-            db = self._require()
-            await db.execute("BEGIN IMMEDIATE")
-            try:
-                cursor = await db.execute(
-                    """
-                    SELECT job_id, attempts FROM jobs
-                    WHERE status = 'queued'
-                       OR (status IN ('extracting', 'matching')
-                           AND (lease_until IS NULL OR lease_until < ?))
-                    ORDER BY created_at LIMIT 1
-                    """,
-                    (now,),
-                )
-                row = await cursor.fetchone()
-                await cursor.close()
-                if row is None:
-                    await db.execute("COMMIT")
-                    return None
-                job_id = row["job_id"]
-                await db.execute(
-                    """
-                    UPDATE jobs SET lease_owner = ?, lease_until = ?, attempts = attempts + 1,
-                        started_at = COALESCE(started_at, ?), updated_at = ?
-                    WHERE job_id = ?
-                    """,
-                    (owner, now + lease_seconds, now, now, job_id),
-                )
-                cursor = await db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
-                claimed = await cursor.fetchone()
-                await cursor.close()
-                await db.execute("COMMIT")
-                return claimed
-            except BaseException:
-                await db.execute("ROLLBACK")
-                raise
+        async with self._txn() as db:
+            cursor = await db.execute(
+                """
+                SELECT job_id FROM jobs
+                WHERE status IN ('queued', 'extracting', 'matching')
+                  AND (lease_until IS NULL OR lease_until < ?)
+                ORDER BY created_at LIMIT 1
+                """,
+                (now,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                return None
+            job_id = row["job_id"]
+            await db.execute(
+                """
+                UPDATE jobs SET lease_owner = ?, lease_until = ?, attempts = attempts + 1,
+                    started_at = COALESCE(started_at, ?), updated_at = ?
+                WHERE job_id = ?
+                """,
+                (owner, now + lease_seconds, now, now, job_id),
+            )
+            cursor = await db.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+            claimed = await cursor.fetchone()
+            await cursor.close()
+            return claimed
 
     async def renew(self, job_id: str, owner: str, lease_seconds: int) -> bool:
         now = self._now()
@@ -360,70 +377,63 @@ class JobStore:
         self, job_id: str, extraction: PlaylistExtraction, tracks: list[tuple[PlaylistEntry, TrackResult]]
     ) -> None:
         now = self._now()
-        async with self._lock:
-            db = self._require()
-            await db.execute("BEGIN IMMEDIATE")
-            try:
-                await db.execute("DELETE FROM job_tracks WHERE job_id = ?", (job_id,))
-                await db.executemany(
-                    """
-                    INSERT INTO job_tracks (
-                        job_id, position, source_id, title, artists_json, duration_ms, album,
-                        isrc, source_url, status, youtube_id, youtube_url, confidence, provider,
-                        match_title, match_artist, detail, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            job_id,
-                            entry.position,
-                            entry.source_id,
-                            entry.title,
-                            json.dumps(list(entry.artists)),
-                            entry.duration_ms,
-                            entry.album,
-                            entry.isrc,
-                            entry.url,
-                            result.status,
-                            result.youtube_id,
-                            result.youtube_url,
-                            result.confidence,
-                            result.provider,
-                            result.match_title,
-                            result.match_artist,
-                            result.detail,
-                            now,
-                        )
-                        for entry, result in tracks
-                    ],
-                )
-                await db.execute(
-                    """
-                    UPDATE jobs SET title = ?, description = ?, owner = ?, reported_total = ?,
-                        extraction_complete = ?, truncated = ?, incomplete_reason = ?,
-                        extractor = ?, total = ?, warnings_json = ?, status = 'matching',
-                        updated_at = ?
-                    WHERE job_id = ?
-                    """,
+        async with self._txn() as db:
+            await db.execute("DELETE FROM job_tracks WHERE job_id = ?", (job_id,))
+            await db.executemany(
+                """
+                INSERT INTO job_tracks (
+                    job_id, position, source_id, title, artists_json, duration_ms, album,
+                    isrc, source_url, status, youtube_id, youtube_url, confidence, provider,
+                    match_title, match_artist, detail, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
                     (
-                        extraction.title,
-                        extraction.description,
-                        extraction.owner,
-                        extraction.reported_total,
-                        int(extraction.extraction_complete),
-                        int(extraction.truncated),
-                        extraction.incomplete_reason,
-                        extraction.extractor,
-                        len(tracks),
-                        json.dumps(list(extraction.fallback_errors)) if extraction.fallback_errors else None,
-                        now,
                         job_id,
-                    ),
-                )
-                await db.execute("COMMIT")
-            except BaseException:
-                await db.execute("ROLLBACK")
-                raise
+                        entry.position,
+                        entry.source_id,
+                        entry.title,
+                        json.dumps(list(entry.artists)),
+                        entry.duration_ms,
+                        entry.album,
+                        entry.isrc,
+                        entry.url,
+                        result.status,
+                        result.youtube_id,
+                        result.youtube_url,
+                        result.confidence,
+                        result.provider,
+                        result.match_title,
+                        result.match_artist,
+                        result.detail,
+                        now,
+                    )
+                    for entry, result in tracks
+                ],
+            )
+            await db.execute(
+                """
+                UPDATE jobs SET title = ?, description = ?, owner = ?, reported_total = ?,
+                    extraction_complete = ?, truncated = ?, incomplete_reason = ?,
+                    extractor = ?, total = ?, warnings_json = ?, status = 'matching',
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                (
+                    extraction.title,
+                    extraction.description,
+                    extraction.owner,
+                    extraction.reported_total,
+                    int(extraction.extraction_complete),
+                    int(extraction.truncated),
+                    extraction.incomplete_reason,
+                    extraction.extractor,
+                    len(tracks),
+                    json.dumps(list(extraction.fallback_errors)) if extraction.fallback_errors else None,
+                    now,
+                    job_id,
+                ),
+            )
 
     async def pending_tracks(self, job_id: str) -> list[aiosqlite.Row]:
         return await self._fetchall(
@@ -482,23 +492,16 @@ class JobStore:
 
     async def prune(self) -> int:
         now = self._now()
-        async with self._lock:
-            db = self._require()
-            await db.execute("BEGIN IMMEDIATE")
-            try:
-                await db.execute(
-                    "DELETE FROM job_tracks WHERE job_id IN "
-                    "(SELECT job_id FROM jobs WHERE expires_at <= ?)",
-                    (now,),
-                )
-                cursor = await db.execute("DELETE FROM jobs WHERE expires_at <= ?", (now,))
-                removed = cursor.rowcount
-                await cursor.close()
-                await db.execute("DELETE FROM playlist_cache WHERE expires_at <= ?", (now,))
-                await db.execute("COMMIT")
-            except BaseException:
-                await db.execute("ROLLBACK")
-                raise
+        async with self._txn() as db:
+            await db.execute(
+                "DELETE FROM job_tracks WHERE job_id IN "
+                "(SELECT job_id FROM jobs WHERE expires_at <= ?)",
+                (now,),
+            )
+            cursor = await db.execute("DELETE FROM jobs WHERE expires_at <= ?", (now,))
+            removed = cursor.rowcount
+            await cursor.close()
+            await db.execute("DELETE FROM playlist_cache WHERE expires_at <= ?", (now,))
         return removed
 
     # -------------------------------------------------------- playlist cache
@@ -798,7 +801,11 @@ class JobManager:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                if self._stopping:
+                    return
                 logger.exception("Playlist worker %d crashed while claiming a job", index)
+            if self._stopping:
+                return
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=5.0)

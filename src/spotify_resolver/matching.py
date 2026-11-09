@@ -173,8 +173,40 @@ class ScoringConfig:
         return self.youtube_max_duration_diff_ms
 
 
+_EDITION_WORDS = frozenset(
+    {
+        "remaster", "remastered", "version", "single", "mono", "stereo",
+        "album", "original", "digital", "deluxe", "edition",
+    }
+)
+_EDITION_KEYWORDS = frozenset({"remaster", "remastered", "version", "mono", "stereo"})
+_TRAILING_DASH_SEGMENT_RE = re.compile(r"\s+[-–—]\s+([^-–—()\[\]]+)$")
+
+
+def _is_edition_noise(segment: str) -> bool:
+    """True for pure edition annotations such as "Remastered 2010" or
+    "Single Version;1990 Remastered Version". Anything containing another word
+    (live, remix, acoustic, a venue...) is meaningful and kept."""
+    tokens = [t for t in re.split(r"[^a-z0-9]+", segment.casefold()) if t]
+    if not tokens or not any(t in _EDITION_KEYWORDS for t in tokens):
+        return False
+    return all(t in _EDITION_WORDS or (t.isdigit() and len(t) == 4) for t in tokens)
+
+
+def _strip_edition_noise(text: str) -> str:
+    def bracket(match: re.Match[str]) -> str:
+        return " " if _is_edition_noise(match.group(1)) else match.group(0)
+
+    text = _BRACKETED_GROUP_RE.sub(bracket, text)
+    match = _TRAILING_DASH_SEGMENT_RE.search(text)
+    if match and _is_edition_noise(match.group(1)):
+        text = text[: match.start()]
+    return text
+
+
 def clean_title(value: str) -> str:
-    text = _BRACKETED_FEAT_RE.sub(" ", value)
+    text = _strip_edition_noise(value)
+    text = _BRACKETED_FEAT_RE.sub(" ", text)
 
     def strip_delivery_bracket(match: re.Match[str]) -> str:
         return " " if _DELIVERY_NOISE_RE.search(match.group(1)) else match.group(0)

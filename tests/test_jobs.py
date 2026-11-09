@@ -216,3 +216,27 @@ async def test_cache_migration_preserves_existing_rows(tmp_path) -> None:
     conn = sqlite3.connect(path)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     conn.close()
+
+
+async def test_job_with_failed_tracks_is_not_reused(make_settings) -> None:
+    settings = make_settings(yt_music_enabled=True, yt_music_retry_backoff_seconds=0.0)
+    clock = MockClock()
+    ytm = SmartYTMusic(failing={1})
+    m, store, cache, raw = await build(settings, FakeSpotifyPlaylists([track_item(1), track_item(2)]), ytm, clock)
+    try:
+        first, _ = await m.submit(PLAYLIST, "u")
+        await m.run_once()
+        assert (await store.get(first["job_id"]))["status"] == "partial"
+        second, reused = await m.submit(PLAYLIST, "u")
+        assert not reused and second["job_id"] != first["job_id"]
+        ytm.failing.clear()
+        await m.run_once()
+        counts = await store.counts(second["job_id"])
+        assert counts["matched"] == 2 and counts["failed"] == 0
+        # Track 2 was searched once (first run) and is served from cache on the retry.
+        assert sum(q.endswith(" 2") for q in ytm.calls) == 1
+        assert sum(q.endswith(" 1") for q in ytm.calls) == 5  # 4 failed attempts + 1 retry
+    finally:
+        await store.close()
+        await cache.close()
+        await raw.aclose()

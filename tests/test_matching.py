@@ -280,3 +280,30 @@ def test_search_fallback_urls(sample_track: SpotifyTrack) -> None:
     assert "Rick+Astley" in youtube
     assert "Never+Gonna" in youtube
     assert soundcloud.startswith("https://soundcloud.com/search?q=")
+
+
+import pytest as _pytest  # noqa: E402
+
+from spotify_resolver.matching import clean_title as _clean_title  # noqa: E402
+
+
+@_pytest.mark.parametrize(
+    ("raw", "cleaned"),
+    [
+        ("Imagine - Remastered 2010", "Imagine"),
+        ("Hey Jude - Remastered 2015", "Hey Jude"),
+        ("Superstition - Single Version", "Superstition"),
+        ("Heroes - Single Version;1990 Remastered Version", "Heroes"),
+        ("Song (Remastered 2009)", "Song"),
+    ],
+)
+def test_edition_annotations_are_stripped(raw: str, cleaned: str) -> None:
+    assert _clean_title(raw) == cleaned
+
+
+@_pytest.mark.parametrize(
+    "raw",
+    ["Despacito - Remix", "Song - Acoustic Version", "Hotel California - Live On MTV, 1994", "Song - Original Mix"],
+)
+def test_meaningful_version_markers_are_kept(raw: str) -> None:
+    assert _clean_title(raw) == raw
