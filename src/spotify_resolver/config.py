@@ -131,6 +131,43 @@ class Settings:
     cors_origins: tuple[str, ...] = ()
     log_level: str = "INFO"
 
+    # v2: YouTube Music (ytmusicapi)
+    yt_music_enabled: bool = True
+    yt_music_concurrency: int = 3
+    yt_music_timeout_seconds: float = 10.0
+    yt_music_max_results: int = 10
+    yt_music_match_threshold: float = 0.75
+    yt_music_uncertain_threshold: float = 0.60
+    yt_music_weight_title: float = 0.45
+    yt_music_weight_artist: float = 0.35
+    yt_music_weight_duration: float = 0.20
+
+    # v2: primary resolver circuit breaker
+    primary_resolver_cooldown: int = 300
+
+    # v2: Spotify playlist extraction
+    spotify_playlist_extractor: str = "auto"
+    spotify_webplayer_fallback: bool = True
+    spotify_embed_partial_fallback: bool = True
+    spotify_playlist_page_size: int = 100
+    spotify_api_max_bytes: int = 8_388_608
+    spotify_bundle_max_bytes: int = 16_777_216
+    spotify_webplayer_query_hash: str | None = None
+
+    # v2: YouTube playlist extraction (yt-dlp)
+    youtube_playlist_timeout_seconds: float = 90.0
+
+    # v2: playlists and jobs
+    playlist_max_tracks: int = 1000
+    playlist_max_concurrent_jobs: int = 2
+    playlist_max_pending_jobs: int = 50
+    playlist_cache_ttl: int = 86_400
+    playlist_partial_cache_ttl: int = 600
+    job_ttl_seconds: int = 259_200
+    job_lease_seconds: int = 120
+    resolver_cache_enabled: bool = True
+    v2_rate_limit_per_minute: int = 20
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "database_path", Path(self.database_path).expanduser())
         for name, value in (
@@ -230,6 +267,62 @@ class Settings:
             raise ValueError("PROVIDER_RATE_LIMIT_WAIT_SECONDS cannot be negative")
         if self.stale_match_grace_seconds < 0:
             raise ValueError("STALE_MATCH_GRACE_SECONDS cannot be negative")
+        self._validate_v2()
+
+    def _validate_v2(self) -> None:
+        for name, value in (
+            ("YT_MUSIC_MATCH_THRESHOLD", self.yt_music_match_threshold),
+            ("YT_MUSIC_UNCERTAIN_THRESHOLD", self.yt_music_uncertain_threshold),
+        ):
+            if not (math.isfinite(value) and 0 <= value <= 1):
+                raise ValueError(f"{name} must be between 0 and 1")
+        if self.yt_music_uncertain_threshold > self.yt_music_match_threshold:
+            raise ValueError(
+                "YT_MUSIC_UNCERTAIN_THRESHOLD cannot exceed YT_MUSIC_MATCH_THRESHOLD"
+            )
+        weights = (
+            self.yt_music_weight_title,
+            self.yt_music_weight_artist,
+            self.yt_music_weight_duration,
+        )
+        if min(weights) < 0 or self.yt_music_weight_title + self.yt_music_weight_artist <= 0:
+            raise ValueError("YT_MUSIC_WEIGHT_* must be non-negative with title+artist > 0")
+        for name, value in (
+            ("YT_MUSIC_TIMEOUT_SECONDS", self.yt_music_timeout_seconds),
+            ("YOUTUBE_PLAYLIST_TIMEOUT_SECONDS", self.youtube_playlist_timeout_seconds),
+        ):
+            if not (math.isfinite(value) and value > 0):
+                raise ValueError(f"{name} must be greater than zero")
+        for name, value in (
+            ("YT_MUSIC_CONCURRENCY", self.yt_music_concurrency),
+            ("YT_MUSIC_MAX_RESULTS", self.yt_music_max_results),
+            ("SPOTIFY_PLAYLIST_PAGE_SIZE", self.spotify_playlist_page_size),
+            ("SPOTIFY_API_MAX_BYTES", self.spotify_api_max_bytes),
+            ("SPOTIFY_BUNDLE_MAX_BYTES", self.spotify_bundle_max_bytes),
+            ("PLAYLIST_MAX_TRACKS", self.playlist_max_tracks),
+            ("PLAYLIST_MAX_CONCURRENT_JOBS", self.playlist_max_concurrent_jobs),
+            ("PLAYLIST_MAX_PENDING_JOBS", self.playlist_max_pending_jobs),
+            ("PLAYLIST_CACHE_TTL", self.playlist_cache_ttl),
+            ("PLAYLIST_PARTIAL_CACHE_TTL", self.playlist_partial_cache_ttl),
+            ("JOB_TTL_SECONDS", self.job_ttl_seconds),
+            ("JOB_LEASE_SECONDS", self.job_lease_seconds),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
+        if self.spotify_playlist_page_size > 500:
+            raise ValueError("SPOTIFY_PLAYLIST_PAGE_SIZE cannot exceed 500")
+        if self.primary_resolver_cooldown < 0:
+            raise ValueError("PRIMARY_RESOLVER_COOLDOWN cannot be negative")
+        if self.v2_rate_limit_per_minute < 0:
+            raise ValueError("V2_RATE_LIMIT_PER_MINUTE cannot be negative")
+        if self.spotify_playlist_extractor not in {
+            "auto",
+            "spotify_downloader",
+            "webplayer",
+        }:
+            raise ValueError(
+                "SPOTIFY_PLAYLIST_EXTRACTOR must be auto, spotify_downloader or webplayer"
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -310,4 +403,47 @@ class Settings:
             trust_proxy_headers=_boolean(source, "TRUST_PROXY_HEADERS", False),
             cors_origins=_csv(source, "CORS_ORIGINS", ()),
             log_level=_text(source, "LOG_LEVEL", "INFO").upper(),
+            yt_music_enabled=_boolean(source, "YT_MUSIC_ENABLED", True),
+            yt_music_concurrency=_integer(source, "YT_MUSIC_CONCURRENCY", 3),
+            yt_music_timeout_seconds=_number(source, "YT_MUSIC_TIMEOUT_SECONDS", 10.0),
+            yt_music_max_results=_integer(source, "YT_MUSIC_MAX_RESULTS", 10),
+            yt_music_match_threshold=_number(source, "YT_MUSIC_MATCH_THRESHOLD", 0.75),
+            yt_music_uncertain_threshold=_number(
+                source, "YT_MUSIC_UNCERTAIN_THRESHOLD", 0.60
+            ),
+            yt_music_weight_title=_number(source, "YT_MUSIC_WEIGHT_TITLE", 0.45),
+            yt_music_weight_artist=_number(source, "YT_MUSIC_WEIGHT_ARTIST", 0.35),
+            yt_music_weight_duration=_number(source, "YT_MUSIC_WEIGHT_DURATION", 0.20),
+            primary_resolver_cooldown=_integer(source, "PRIMARY_RESOLVER_COOLDOWN", 300),
+            spotify_playlist_extractor=_text(
+                source, "SPOTIFY_PLAYLIST_EXTRACTOR", "auto"
+            ).lower(),
+            spotify_webplayer_fallback=_boolean(
+                source, "SPOTIFY_WEBPLAYER_FALLBACK", True
+            ),
+            spotify_embed_partial_fallback=_boolean(
+                source, "SPOTIFY_EMBED_PARTIAL_FALLBACK", True
+            ),
+            spotify_playlist_page_size=_integer(source, "SPOTIFY_PLAYLIST_PAGE_SIZE", 100),
+            spotify_api_max_bytes=_integer(source, "SPOTIFY_API_MAX_BYTES", 8_388_608),
+            spotify_bundle_max_bytes=_integer(
+                source, "SPOTIFY_BUNDLE_MAX_BYTES", 16_777_216
+            ),
+            spotify_webplayer_query_hash=_optional(
+                source, "SPOTIFY_WEBPLAYER_QUERY_HASH"
+            ),
+            youtube_playlist_timeout_seconds=_number(
+                source, "YOUTUBE_PLAYLIST_TIMEOUT_SECONDS", 90.0
+            ),
+            playlist_max_tracks=_integer(source, "PLAYLIST_MAX_TRACKS", 1000),
+            playlist_max_concurrent_jobs=_integer(
+                source, "PLAYLIST_MAX_CONCURRENT_JOBS", 2
+            ),
+            playlist_max_pending_jobs=_integer(source, "PLAYLIST_MAX_PENDING_JOBS", 50),
+            playlist_cache_ttl=_integer(source, "PLAYLIST_CACHE_TTL", 86_400),
+            playlist_partial_cache_ttl=_integer(source, "PLAYLIST_PARTIAL_CACHE_TTL", 600),
+            job_ttl_seconds=_integer(source, "JOB_TTL_SECONDS", 259_200),
+            job_lease_seconds=_integer(source, "JOB_LEASE_SECONDS", 120),
+            resolver_cache_enabled=_boolean(source, "RESOLVER_CACHE_ENABLED", True),
+            v2_rate_limit_per_minute=_integer(source, "V2_RATE_LIMIT_PER_MINUTE", 20),
         )

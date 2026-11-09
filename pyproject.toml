@@ -11,6 +11,8 @@ dependencies = [
     "httpx>=0.27",
     "aiosqlite>=0.20",
     "python-dotenv>=1.0",
+    "ytmusicapi>=1.12.3",
+    "yt-dlp>=2026.10.26",
 ]
 
 [dependency-groups]
