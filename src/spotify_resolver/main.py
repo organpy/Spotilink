@@ -11,11 +11,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import InboundRateLimitMiddleware, install_exception_handlers, router
+from .api_v2 import V2RateLimitMiddleware
+from .api_v2 import router as v2_router
 from .cache import Cache
 from .circuit import CircuitBreaker
 from .concurrency import SlidingWindowLimiter
 from .config import Settings
 from .http import LimitedHttpClient
+from .jobs import JobManager, JobStore, TrackMatcher
+from .playlists.spotify_downloader_adapter import SpotifyDownloaderExtractor
+from .playlists.spotify_embed import SpotifyEmbedExtractor
+from .playlists.spotify_playlist import SpotifyPlaylistService
+from .playlists.spotify_webplayer import SpotifyWebPlayerExtractor
+from .playlists.youtube_playlist import YouTubePlaylistExtractor
 from .providers.base import Provider
 from .providers.soundcloud import SoundCloudProvider
 from .providers.youtube import YouTubeProvider
@@ -34,6 +42,8 @@ def create_app(
     clock: Callable[[], float] | None = None,
     http_sleep: Callable[[float], Awaitable[None]] | None = None,
     ytmusic: YTMusicClient | None = None,
+    start_workers: bool = True,
+    youtube_playlist_runner: Callable[[str, dict], dict] | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings.from_env()
     epoch_clock = clock or time.time
@@ -119,15 +129,41 @@ def create_app(
         app.state.service = service
         app.state.ytmusic_matcher = matcher
         app.state.primary_breaker = primary_breaker
+
+        spotify_playlists = SpotifyPlaylistService(
+            app_settings,
+            primary=SpotifyDownloaderExtractor(http, app_settings, clock=epoch_clock),
+            secondary=SpotifyWebPlayerExtractor(http, app_settings, clock=epoch_clock),
+            embed=SpotifyEmbedExtractor(http, app_settings),
+        )
+        job_store = JobStore(app_settings.database_path, clock=epoch_clock)
+        await job_store.initialize()
+        jobs = JobManager(
+            app_settings,
+            job_store,
+            spotify=spotify_playlists,
+            youtube=YouTubePlaylistExtractor(app_settings, runner=youtube_playlist_runner),
+            track_matcher=(
+                TrackMatcher(matcher, cache, app_settings, clock=epoch_clock)
+                if matcher is not None
+                else None
+            ),
+        )
+        app.state.spotify_playlists = spotify_playlists
+        app.state.jobs = jobs
+        if start_workers:
+            await jobs.start()
         try:
             yield
         finally:
+            await jobs.stop()
+            await job_store.close()
             await http.aclose()
             await cache.close()
 
     app = FastAPI(
         title="Spotilink",
-        version="0.1.0",
+        version="0.2.0",
         description=(
             "Spotilink resolves public Spotify track links to verified YouTube or "
             "SoundCloud track links. Spotify is read from public track pages without "
@@ -141,16 +177,19 @@ def create_app(
         app_settings.api_rate_limit_per_minute
     )
 
+    app.state.v2_limiter = SlidingWindowLimiter(app_settings.v2_rate_limit_per_minute)
     app.include_router(router)
+    app.include_router(v2_router)
     install_exception_handlers(app)
 
     # Added before CORS so CORS is the outermost middleware for browser clients.
     app.add_middleware(InboundRateLimitMiddleware)
+    app.add_middleware(V2RateLimitMiddleware)
     if app_settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(app_settings.cors_origins),
-            allow_methods=["GET", "OPTIONS"],
+            allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["*"],
             max_age=600,
         )

@@ -136,6 +136,7 @@ class Settings:
     yt_music_concurrency: int = 3
     yt_music_timeout_seconds: float = 10.0
     yt_music_max_results: int = 10
+    yt_music_retry_backoff_seconds: float = 2.0
     yt_music_match_threshold: float = 0.75
     yt_music_uncertain_threshold: float = 0.60
     yt_music_weight_title: float = 0.45
@@ -311,6 +312,11 @@ class Settings:
                 raise ValueError(f"{name} must be greater than zero")
         if self.spotify_playlist_page_size > 500:
             raise ValueError("SPOTIFY_PLAYLIST_PAGE_SIZE cannot exceed 500")
+        if not (
+            math.isfinite(self.yt_music_retry_backoff_seconds)
+            and self.yt_music_retry_backoff_seconds >= 0
+        ):
+            raise ValueError("YT_MUSIC_RETRY_BACKOFF_SECONDS cannot be negative")
         if self.primary_resolver_cooldown < 0:
             raise ValueError("PRIMARY_RESOLVER_COOLDOWN cannot be negative")
         if self.v2_rate_limit_per_minute < 0:
@@ -407,6 +413,9 @@ class Settings:
             yt_music_concurrency=_integer(source, "YT_MUSIC_CONCURRENCY", 3),
             yt_music_timeout_seconds=_number(source, "YT_MUSIC_TIMEOUT_SECONDS", 10.0),
             yt_music_max_results=_integer(source, "YT_MUSIC_MAX_RESULTS", 10),
+            yt_music_retry_backoff_seconds=_number(
+                source, "YT_MUSIC_RETRY_BACKOFF_SECONDS", 2.0
+            ),
             yt_music_match_threshold=_number(source, "YT_MUSIC_MATCH_THRESHOLD", 0.75),
             yt_music_uncertain_threshold=_number(
                 source, "YT_MUSIC_UNCERTAIN_THRESHOLD", 0.60

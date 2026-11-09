@@ -180,6 +180,19 @@ def install_exception_handlers(app: Any) -> None:
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
+        if request.url.path.startswith("/v2/"):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "invalid_request",
+                        "message": "The request body or query parameters are invalid.",
+                        "retryable": False,
+                        "retry_after_seconds": None,
+                    },
+                },
+            )
         error = ResolverError(
             "invalid_query_parameter",
             "One or more query parameters are invalid.",

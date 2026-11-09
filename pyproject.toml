@@ -1,6 +1,6 @@
 [project]
 name = "spotilink"
-version = "0.1.0"
+version = "0.2.0"
 description = "Spotilink: resolve public Spotify track links to verified YouTube or SoundCloud links"
 license = "MIT"
 license-files = ["LICENSE"]

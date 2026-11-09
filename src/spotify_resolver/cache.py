@@ -55,6 +55,21 @@ CREATE INDEX IF NOT EXISTS idx_resolutions_expiry
 """
 
 
+SCHEMA_VERSION = 2
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Additive, idempotent migrations. Existing rows are preserved."""
+    cursor = await db.execute("PRAGMA table_info(resolutions)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    await cursor.close()
+    if "provider" not in columns:
+        # v2: which backend produced the resolution (youtube_data_api,
+        # ytmusicapi, soundcloud_api). NULL for rows written before v2.
+        await db.execute("ALTER TABLE resolutions ADD COLUMN provider TEXT")
+    await db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+
 class Cache:
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path) if str(path) != ":memory:" else Path(":memory:")
@@ -77,7 +92,7 @@ class Cache:
             await db.execute("PRAGMA synchronous=NORMAL")
             await db.execute("PRAGMA busy_timeout=5000")
             await db.executescript(_SCHEMA)
-            await db.execute("PRAGMA user_version=1")
+            await _migrate(db)
             await db.commit()
         except Exception:
             await db.close()
@@ -261,6 +276,7 @@ class Cache:
         best_confidence: float | None,
         now: float,
         ttl_seconds: int,
+        provider: str | None = None,
     ) -> None:
         if status not in {"matched", "not_found"}:
             raise ValueError("Invalid resolution status")
@@ -275,14 +291,16 @@ class Cache:
         candidate_json = (
             json.dumps(candidate_to_cache_dict(candidate)) if candidate else None
         )
+        if provider is None and candidate is not None:
+            provider = candidate.candidate.source
         async with self._lock:
             await db.execute(
                 """
                 INSERT INTO resolutions (
                     spotify_id, platform, status, url, confidence, best_confidence,
                     candidate_json, title, artists_json, album, duration_ms,
-                    duration_precision, resolved_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    duration_precision, resolved_at, expires_at, provider
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(spotify_id, platform) DO UPDATE SET
                     status = excluded.status,
                     url = excluded.url,
@@ -295,7 +313,8 @@ class Cache:
                     duration_ms = excluded.duration_ms,
                     duration_precision = excluded.duration_precision,
                     resolved_at = excluded.resolved_at,
-                    expires_at = excluded.expires_at
+                    expires_at = excluded.expires_at,
+                    provider = excluded.provider
                 """,
                 (
                     track.spotify_id,
@@ -312,6 +331,7 @@ class Cache:
                     track.duration_precision,
                     int(now),
                     int(now) + ttl_seconds,
+                    provider,
                 ),
             )
             await db.commit()
@@ -355,6 +375,7 @@ def _resolution_from_row(
     status = row["status"]
     if status == "not_found":
         return CachedResolution(
+            provider=_row_provider(row),
             spotify_id=spotify_id,
             platform=platform,
             status="not_found",
@@ -382,6 +403,7 @@ def _resolution_from_row(
     ):
         return None
     return CachedResolution(
+        provider=_row_provider(row),
         spotify_id=spotify_id,
         platform=platform,
         status="matched",
@@ -422,3 +444,11 @@ def _track_from_row(row: aiosqlite.Row, spotify_id: str) -> SpotifyTrack | None:
 
 def _float_or_none(value: Any) -> float | None:
     return None if value is None else float(value)
+
+
+def _row_provider(row: aiosqlite.Row) -> str | None:
+    try:
+        value = row["provider"]
+    except (IndexError, KeyError):
+        return None
+    return None if value is None else str(value)

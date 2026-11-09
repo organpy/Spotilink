@@ -110,6 +110,7 @@ class CachedResolution:
     candidate: ScoredCandidate | None
     resolved_at: float
     expires_at: float
+    provider: str | None = None
 
 
 def candidate_to_cache_dict(scored: ScoredCandidate) -> dict[str, Any]:
